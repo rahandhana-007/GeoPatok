@@ -1,0 +1,1156 @@
+/**
+ * LahanMapper — accurate smartphone land mapping → GeoJSON
+ * All data stays local (localStorage). No backend required.
+ */
+(function () {
+  "use strict";
+
+  // ---------- Constants & state ----------
+  const STORAGE_KEY = "lahanmapper_parcels_v1";
+  const SETTINGS_KEY = "lahanmapper_settings_v1";
+
+  const state = {
+    points: [], // [{lat, lng, accuracy, altitude, timestamp}]
+    closed: false,
+    tapMode: false,
+    walkMode: false,
+    walkTimer: null,
+    watchId: null,
+    lastPosition: null, // GeolocationPosition
+    parcels: [],
+    meta: {
+      name: "",
+      owner: "",
+      type: "pertanian",
+      notes: "",
+    },
+    settings: {
+      accuracyThreshold: 15,
+      walkInterval: 5,
+      highAccuracy: true,
+      basemap: "osm",
+    },
+  };
+
+  // ---------- DOM ----------
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    statusText: $("statusText"),
+    gpsBadge: $("gpsBadge"),
+    gpsDot: $("gpsDot"),
+    gpsLabel: $("gpsLabel"),
+    statsCard: $("statsCard"),
+    statPoints: $("statPoints"),
+    statPerimeter: $("statPerimeter"),
+    statArea: $("statArea"),
+    btnLocate: $("btnLocate"),
+    btnAddPoint: $("btnAddPoint"),
+    btnUndo: $("btnUndo"),
+    btnClose: $("btnClose"),
+    btnMore: $("btnMore"),
+    btnLayers: $("btnLayers"),
+    btnHelp: $("btnHelp"),
+    moreSheet: $("moreSheet"),
+    layersSheet: $("layersSheet"),
+    metaSheet: $("metaSheet"),
+    parcelsSheet: $("parcelsSheet"),
+    exportSheet: $("exportSheet"),
+    helpSheet: $("helpSheet"),
+    toast: $("toast"),
+    fileImport: $("fileImport"),
+    accuracyThreshold: $("accuracyThreshold"),
+    walkInterval: $("walkInterval"),
+    highAccuracy: $("highAccuracy"),
+    metaName: $("metaName"),
+    metaOwner: $("metaOwner"),
+    metaType: $("metaType"),
+    metaNotes: $("metaNotes"),
+    parcelsList: $("parcelsList"),
+    parcelCountLabel: $("parcelCountLabel"),
+    tapModeLabel: $("tapModeLabel"),
+    walkModeLabel: $("walkModeLabel"),
+    geojsonPreview: $("geojsonPreview"),
+  };
+
+  // ---------- Map setup ----------
+  const map = L.map("map", {
+    zoomControl: true,
+    attributionControl: true,
+    maxZoom: 22,
+  }).setView([3.5952, 98.6722], 15); // default Medan
+
+  const basemaps = {
+    osm: L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap",
+    }),
+    satellite: L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      {
+        maxZoom: 19,
+        attribution: "Tiles &copy; Esri",
+      }
+    ),
+    topo: L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
+      maxZoom: 17,
+      attribution: "&copy; OpenTopoMap",
+    }),
+  };
+
+  basemaps.osm.addTo(map);
+
+  const drawLayer = L.layerGroup().addTo(map);
+  const parcelsLayer = L.layerGroup().addTo(map);
+  let userMarker = null;
+  let accuracyCircle = null;
+  let polyline = null;
+  let polygon = null;
+
+  // ---------- Utilities ----------
+  function toast(msg, isError = false) {
+    els.toast.textContent = msg;
+    els.toast.hidden = false;
+    els.toast.classList.toggle("error", !!isError);
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => {
+      els.toast.hidden = true;
+    }, 2800);
+  }
+
+  function openSheet(id) {
+    const el = $(id);
+    if (el) el.hidden = false;
+  }
+
+  function closeSheet(id) {
+    const el = $(id);
+    if (el) el.hidden = true;
+  }
+
+  function closeAllSheets() {
+    document.querySelectorAll(".sheet").forEach((s) => {
+      s.hidden = true;
+    });
+  }
+
+  function uid() {
+    return "p_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  }
+
+  function loadSettings() {
+    try {
+      const raw = localStorage.getItem(SETTINGS_KEY);
+      if (raw) Object.assign(state.settings, JSON.parse(raw));
+    } catch (_) {}
+    els.accuracyThreshold.value = state.settings.accuracyThreshold;
+    els.walkInterval.value = state.settings.walkInterval;
+    els.highAccuracy.checked = state.settings.highAccuracy;
+    const radio = document.querySelector(
+      `input[name="basemap"][value="${state.settings.basemap}"]`
+    );
+    if (radio) radio.checked = true;
+    setBasemap(state.settings.basemap, false);
+  }
+
+  function saveSettings() {
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
+    } catch (_) {}
+  }
+
+  function loadParcels() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      state.parcels = raw ? JSON.parse(raw) : [];
+    } catch (_) {
+      state.parcels = [];
+    }
+    renderParcelsOnMap();
+    updateParcelCount();
+  }
+
+  function saveParcels() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.parcels));
+    } catch (e) {
+      toast("Gagal menyimpan ke perangkat", true);
+    }
+    updateParcelCount();
+  }
+
+  function updateParcelCount() {
+    const n = state.parcels.length;
+    els.parcelCountLabel.textContent = n + " lahan tersimpan";
+  }
+
+  function setStatus(text) {
+    els.statusText.textContent = text;
+  }
+
+  // ---------- Geodesy (haversine + spherical excess area) ----------
+  const R = 6371008.8; // mean earth radius (m)
+
+  function toRad(d) {
+    return (d * Math.PI) / 180;
+  }
+
+  function haversine(a, b) {
+    const dLat = toRad(b.lat - a.lat);
+    const dLng = toRad(b.lng - a.lng);
+    const lat1 = toRad(a.lat);
+    const lat2 = toRad(b.lat);
+    const h =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+
+  /** Spherical polygon area (m²) using L'Huilier / spherical excess */
+  function polygonArea(points) {
+    if (points.length < 3) return 0;
+    const pts = points.slice();
+    // ensure closed for calculation
+    if (
+      pts[0].lat !== pts[pts.length - 1].lat ||
+      pts[0].lng !== pts[pts.length - 1].lng
+    ) {
+      pts.push(pts[0]);
+    }
+    let total = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      total +=
+        toRad(p2.lng - p1.lng) *
+        (2 + Math.sin(toRad(p1.lat)) + Math.sin(toRad(p2.lat)));
+    }
+    return Math.abs((total * R * R) / 2);
+  }
+
+  function perimeter(points, closed) {
+    if (points.length < 2) return 0;
+    let sum = 0;
+    for (let i = 1; i < points.length; i++) {
+      sum += haversine(points[i - 1], points[i]);
+    }
+    if (closed && points.length >= 3) {
+      sum += haversine(points[points.length - 1], points[0]);
+    }
+    return sum;
+  }
+
+  function formatDistance(m) {
+    if (m >= 1000) return (m / 1000).toFixed(2) + " km";
+    if (m >= 100) return Math.round(m) + " m";
+    return m.toFixed(1) + " m";
+  }
+
+  function formatArea(m2) {
+    if (m2 >= 10000) {
+      // hectares
+      const ha = m2 / 10000;
+      return ha >= 10 ? ha.toFixed(2) + " ha" : ha.toFixed(3) + " ha";
+    }
+    if (m2 >= 1) return Math.round(m2) + " m²";
+    return m2.toFixed(2) + " m²";
+  }
+
+  function centroid(points) {
+    if (!points.length) return null;
+    let lat = 0,
+      lng = 0;
+    points.forEach((p) => {
+      lat += p.lat;
+      lng += p.lng;
+    });
+    return { lat: lat / points.length, lng: lng / points.length };
+  }
+
+  // ---------- Drawing ----------
+  function redraw() {
+    drawLayer.clearLayers();
+    polyline = null;
+    polygon = null;
+
+    const pts = state.points;
+    if (!pts.length) {
+      updateStats();
+      updateButtons();
+      return;
+    }
+
+    // vertices
+    pts.forEach((p, i) => {
+      const icon = L.divIcon({
+        className: "vertex-marker" + (i === 0 ? " first" : ""),
+        iconSize: [i === 0 ? 16 : 14, i === 0 ? 16 : 14],
+      });
+      const m = L.marker([p.lat, p.lng], {
+        icon,
+        draggable: !state.closed,
+        title: `Titik ${i + 1}` + (p.accuracy != null ? ` (±${Math.round(p.accuracy)} m)` : ""),
+      });
+      m.on("dragend", (e) => {
+        const ll = e.target.getLatLng();
+        state.points[i] = {
+          ...state.points[i],
+          lat: ll.lat,
+          lng: ll.lng,
+          accuracy: null,
+          source: "drag",
+        };
+        redraw();
+      });
+      m.bindTooltip(
+        `#${i + 1}` +
+          (p.accuracy != null ? `<br>±${Math.round(p.accuracy)} m` : "") +
+          (p.source ? `<br>${p.source}` : ""),
+        { direction: "top", opacity: 0.9 }
+      );
+      m.addTo(drawLayer);
+    });
+
+    const latlngs = pts.map((p) => [p.lat, p.lng]);
+
+    if (state.closed && pts.length >= 3) {
+      polygon = L.polygon(latlngs, {
+        color: "#14b8a6",
+        weight: 3,
+        fillColor: "#14b8a6",
+        fillOpacity: 0.22,
+      }).addTo(drawLayer);
+    } else if (pts.length >= 2) {
+      polyline = L.polyline(latlngs, {
+        color: "#14b8a6",
+        weight: 3,
+        dashArray: state.closed ? null : "6 8",
+      }).addTo(drawLayer);
+      // preview close line
+      if (pts.length >= 3) {
+        L.polyline([latlngs[latlngs.length - 1], latlngs[0]], {
+          color: "#fbbf24",
+          weight: 2,
+          dashArray: "4 6",
+          opacity: 0.7,
+        }).addTo(drawLayer);
+      }
+    }
+
+    updateStats();
+    updateButtons();
+  }
+
+  function updateStats() {
+    const n = state.points.length;
+    els.statPoints.textContent = String(n);
+    const perim = perimeter(state.points, state.closed);
+    els.statPerimeter.textContent = formatDistance(perim);
+    const area =
+      state.closed || n >= 3 ? polygonArea(state.points) : 0;
+    els.statArea.textContent = n >= 3 ? formatArea(area) : "—";
+    els.statsCard.hidden = n === 0;
+  }
+
+  function updateButtons() {
+    els.btnUndo.disabled = state.points.length === 0;
+    els.btnClose.disabled = state.points.length < 3 || state.closed;
+    els.btnAddPoint.classList.toggle("recording", state.walkMode);
+  }
+
+  function renderParcelsOnMap() {
+    parcelsLayer.clearLayers();
+    state.parcels.forEach((parcel) => {
+      const coords = parcel.geometry.coordinates[0].map((c) => [c[1], c[0]]);
+      const poly = L.polygon(coords, {
+        color: "#6366f1",
+        weight: 2,
+        fillColor: "#6366f1",
+        fillOpacity: 0.12,
+      });
+      const name = parcel.properties.name || "Tanpa nama";
+      const area = parcel.properties.area_m2
+        ? formatArea(parcel.properties.area_m2)
+        : "";
+      poly.bindPopup(
+        `<strong>${escapeHtml(name)}</strong><br>${area}` +
+          (parcel.properties.owner
+            ? `<br>${escapeHtml(parcel.properties.owner)}`
+            : "")
+      );
+      poly.addTo(parcelsLayer);
+
+      const c = centroid(
+        coords.map((ll) => ({ lat: ll[0], lng: ll[1] }))
+      );
+      if (c) {
+        L.marker([c.lat, c.lng], {
+          icon: L.divIcon({
+            className: "parcel-label",
+            html: escapeHtml(name),
+            iconSize: null,
+          }),
+          interactive: false,
+        }).addTo(parcelsLayer);
+      }
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  // ---------- GPS ----------
+  function setBasemap(key, persist = true) {
+    Object.values(basemaps).forEach((l) => {
+      if (map.hasLayer(l)) map.removeLayer(l);
+    });
+    const layer = basemaps[key] || basemaps.osm;
+    layer.addTo(map);
+    state.settings.basemap = key;
+    if (persist) saveSettings();
+  }
+
+  function updateGpsUi(pos) {
+    els.gpsBadge.hidden = false;
+    const acc = pos.coords.accuracy;
+    els.gpsLabel.textContent = `GPS ±${Math.round(acc)} m`;
+    els.gpsDot.classList.remove("good", "ok", "bad");
+    if (acc <= 8) els.gpsDot.classList.add("good");
+    else if (acc <= state.settings.accuracyThreshold) els.gpsDot.classList.add("ok");
+    else els.gpsDot.classList.add("bad");
+  }
+
+  function showUserPosition(pos) {
+    const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+    const ll = [lat, lng];
+    if (!userMarker) {
+      userMarker = L.marker(ll, {
+        icon: L.divIcon({ className: "user-marker", iconSize: [18, 18] }),
+        zIndexOffset: 1000,
+        interactive: false,
+      }).addTo(map);
+    } else {
+      userMarker.setLatLng(ll);
+    }
+    if (!accuracyCircle) {
+      accuracyCircle = L.circle(ll, {
+        radius: accuracy,
+        className: "accuracy-circle",
+        interactive: false,
+      }).addTo(map);
+    } else {
+      accuracyCircle.setLatLng(ll);
+      accuracyCircle.setRadius(accuracy);
+    }
+    updateGpsUi(pos);
+  }
+
+  function geoOptions() {
+    return {
+      enableHighAccuracy: !!state.settings.highAccuracy,
+      maximumAge: 1000,
+      timeout: 20000,
+    };
+  }
+
+  function startWatch() {
+    if (!navigator.geolocation) {
+      toast("Perangkat tidak mendukung GPS", true);
+      setStatus("GPS tidak tersedia");
+      return;
+    }
+    if (state.watchId != null) return;
+    setStatus("Mencari sinyal GPS…");
+    state.watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        state.lastPosition = pos;
+        showUserPosition(pos);
+        const acc = pos.coords.accuracy;
+        if (acc <= 8) setStatus("GPS sangat akurat");
+        else if (acc <= state.settings.accuracyThreshold) setStatus("GPS siap");
+        else setStatus("Akurasi GPS lemah — tunggu dulu");
+      },
+      (err) => {
+        let msg = "Gagal mendapatkan lokasi";
+        if (err.code === 1) msg = "Izin lokasi ditolak";
+        else if (err.code === 2) msg = "Lokasi tidak tersedia";
+        else if (err.code === 3) msg = "Timeout GPS";
+        setStatus(msg);
+        toast(msg, true);
+      },
+      geoOptions()
+    );
+  }
+
+  function locateOnce(fly = true) {
+    if (!navigator.geolocation) {
+      toast("GPS tidak didukung", true);
+      return;
+    }
+    setStatus("Memusatkan lokasi…");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        state.lastPosition = pos;
+        showUserPosition(pos);
+        if (fly) {
+          map.setView([pos.coords.latitude, pos.coords.longitude], Math.max(map.getZoom(), 18), {
+            animate: true,
+          });
+        }
+        setStatus("Lokasi ditemukan");
+      },
+      () => toast("Gagal membaca lokasi", true),
+      geoOptions()
+    );
+  }
+
+  // ---------- Point operations ----------
+  function addPointFromGps(force = false) {
+    if (state.closed) {
+      toast("Poligon sudah ditutup. Hapus dulu untuk menggambar ulang.");
+      return;
+    }
+    if (!state.lastPosition) {
+      toast("GPS belum siap. Tekan Lokasi dulu.", true);
+      locateOnce(false);
+      return;
+    }
+    const c = state.lastPosition.coords;
+    const acc = c.accuracy;
+    if (!force && acc > state.settings.accuracyThreshold) {
+      const ok = confirm(
+        `Akurasi GPS saat ini ±${Math.round(acc)} m (ambang ${state.settings.accuracyThreshold} m).\n\nTetap tambahkan titik?`
+      );
+      if (!ok) return;
+    }
+    pushPoint({
+      lat: c.latitude,
+      lng: c.longitude,
+      accuracy: acc,
+      altitude: c.altitude,
+      timestamp: state.lastPosition.timestamp || Date.now(),
+      source: "gps",
+    });
+  }
+
+  function addPointFromTap(latlng) {
+    if (state.closed) {
+      toast("Poligon sudah ditutup.");
+      return;
+    }
+    pushPoint({
+      lat: latlng.lat,
+      lng: latlng.lng,
+      accuracy: null,
+      altitude: null,
+      timestamp: Date.now(),
+      source: "tap",
+    });
+  }
+
+  function pushPoint(p) {
+    // avoid near-duplicate consecutive points (< 0.5 m)
+    if (state.points.length) {
+      const last = state.points[state.points.length - 1];
+      if (haversine(last, p) < 0.5) {
+        toast("Titik terlalu dekat dengan sebelumnya");
+        return;
+      }
+    }
+    state.points.push(p);
+    redraw();
+    toast(`Titik ${state.points.length} ditambahkan` + (p.accuracy != null ? ` (±${Math.round(p.accuracy)} m)` : ""));
+    // keep map roughly centered on last point if far
+    const z = map.getZoom();
+    if (z >= 16) {
+      map.panTo([p.lat, p.lng], { animate: true });
+    }
+  }
+
+  function undoPoint() {
+    if (!state.points.length) return;
+    if (state.closed) {
+      state.closed = false;
+      setStatus("Poligon dibuka kembali");
+    } else {
+      state.points.pop();
+      toast("Titik terakhir dihapus");
+    }
+    redraw();
+  }
+
+  function closePolygon() {
+    if (state.points.length < 3) {
+      toast("Minimal 3 titik untuk menutup poligon", true);
+      return;
+    }
+    state.closed = true;
+    if (state.walkMode) stopWalkMode();
+    redraw();
+    const area = polygonArea(state.points);
+    setStatus("Poligon ditutup — " + formatArea(area));
+    toast("Poligon ditutup. Luas: " + formatArea(area));
+  }
+
+  function clearActive() {
+    if (!state.points.length) return;
+    if (!confirm("Hapus semua titik poligon aktif?")) return;
+    state.points = [];
+    state.closed = false;
+    if (state.walkMode) stopWalkMode();
+    redraw();
+    setStatus("Siap memetakan");
+    toast("Gambar aktif dihapus");
+  }
+
+  // ---------- Walk mode ----------
+  function toggleWalkMode() {
+    if (state.walkMode) stopWalkMode();
+    else startWalkMode();
+    updateWalkLabel();
+  }
+
+  function startWalkMode() {
+    if (state.closed) {
+      toast("Poligon sudah ditutup", true);
+      return;
+    }
+    state.walkMode = true;
+    els.btnAddPoint.classList.add("recording");
+    setStatus("Mode jalan aktif — kelilingi lahan");
+    toast("Mode jalan ON. Berjalanlah di sepanjang batas.");
+    // take immediate point
+    addPointFromGps(false);
+    const ms = Math.max(2, state.settings.walkInterval) * 1000;
+    state.walkTimer = setInterval(() => {
+      if (!state.walkMode || state.closed) return;
+      if (!state.lastPosition) return;
+      const acc = state.lastPosition.coords.accuracy;
+      if (acc > state.settings.accuracyThreshold * 1.5) return; // skip bad fixes silently
+      addPointFromGps(true);
+    }, ms);
+    updateButtons();
+  }
+
+  function stopWalkMode() {
+    state.walkMode = false;
+    if (state.walkTimer) {
+      clearInterval(state.walkTimer);
+      state.walkTimer = null;
+    }
+    els.btnAddPoint.classList.remove("recording");
+    setStatus(state.closed ? "Poligon ditutup" : "Mode jalan berhenti");
+    updateButtons();
+  }
+
+  function updateWalkLabel() {
+    els.walkModeLabel.textContent = state.walkMode
+      ? "AKTIF — tekan lagi untuk berhenti"
+      : "Nonaktif — rekam titik sambil berjalan";
+  }
+
+  function updateTapLabel() {
+    els.tapModeLabel.textContent = state.tapMode
+      ? "AKTIF — ketuk peta untuk menambah titik"
+      : "Nonaktif — ketuk peta untuk menambah titik";
+  }
+
+  // ---------- Meta & save ----------
+  function openMeta() {
+    els.metaName.value = state.meta.name;
+    els.metaOwner.value = state.meta.owner;
+    els.metaType.value = state.meta.type;
+    els.metaNotes.value = state.meta.notes;
+    openSheet("metaSheet");
+  }
+
+  function saveMetaFromForm() {
+    state.meta = {
+      name: els.metaName.value.trim(),
+      owner: els.metaOwner.value.trim(),
+      type: els.metaType.value,
+      notes: els.metaNotes.value.trim(),
+    };
+    closeSheet("metaSheet");
+    toast("Info lahan disimpan");
+  }
+
+  function buildFeatureFromActive() {
+    if (state.points.length < 3) return null;
+    const ring = state.points.map((p) => [p.lng, p.lat]);
+    // close ring
+    const first = ring[0];
+    const last = ring[ring.length - 1];
+    if (first[0] !== last[0] || first[1] !== last[1]) {
+      ring.push([first[0], first[1]]);
+    }
+    const area = polygonArea(state.points);
+    const perim = perimeter(state.points, true);
+    const vertices = state.points.map((p, i) => ({
+      index: i + 1,
+      lat: p.lat,
+      lng: p.lng,
+      accuracy_m: p.accuracy,
+      altitude_m: p.altitude,
+      timestamp: p.timestamp,
+      source: p.source,
+    }));
+    return {
+      type: "Feature",
+      properties: {
+        id: uid(),
+        name: state.meta.name || "Lahan tanpa nama",
+        owner: state.meta.owner || "",
+        land_type: state.meta.type,
+        notes: state.meta.notes || "",
+        area_m2: Math.round(area * 100) / 100,
+        area_ha: Math.round((area / 10000) * 10000) / 10000,
+        perimeter_m: Math.round(perim * 100) / 100,
+        vertex_count: state.points.length,
+        vertices,
+        created_at: new Date().toISOString(),
+        app: "LahanMapper",
+        crs_note: "WGS84 (EPSG:4326)",
+      },
+      geometry: {
+        type: "Polygon",
+        coordinates: [ring],
+      },
+    };
+  }
+
+  function saveActiveParcel() {
+    if (state.points.length < 3) {
+      toast("Butuh minimal 3 titik", true);
+      return;
+    }
+    if (!state.closed) {
+      state.closed = true;
+      redraw();
+    }
+    if (!state.meta.name) {
+      closeAllSheets();
+      openMeta();
+      toast("Isi nama lahan dulu, lalu simpan lagi");
+      return;
+    }
+    const feature = buildFeatureFromActive();
+    if (!feature) return;
+    state.parcels.push(feature);
+    saveParcels();
+    renderParcelsOnMap();
+    // reset active drawing
+    state.points = [];
+    state.closed = false;
+    state.meta = { name: "", owner: "", type: "pertanian", notes: "" };
+    redraw();
+    setStatus("Lahan disimpan");
+    toast("Lahan disimpan ke daftar");
+    closeAllSheets();
+  }
+
+  // ---------- GeoJSON export / import ----------
+  function featureCollection(features) {
+    return {
+      type: "FeatureCollection",
+      name: "LahanMapper",
+      crs: {
+        type: "name",
+        properties: { name: "urn:ogc:def:crs:OGC:1.3:CRS84" },
+      },
+      features,
+    };
+  }
+
+  function downloadGeoJSON(obj, filename) {
+    const text = JSON.stringify(obj, null, 2);
+    const blob = new Blob([text], { type: "application/geo+json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    toast("File diunduh: " + filename);
+  }
+
+  function exportActive() {
+    const f = buildFeatureFromActive();
+    if (!f) {
+      toast("Belum ada poligon aktif (min. 3 titik)", true);
+      return;
+    }
+    const name = (f.properties.name || "lahan")
+      .replace(/[^\w\-]+/g, "_")
+      .slice(0, 40);
+    downloadGeoJSON(featureCollection([f]), `lahan_${name}.geojson`);
+  }
+
+  function exportAll() {
+    if (!state.parcels.length) {
+      toast("Belum ada lahan tersimpan", true);
+      return;
+    }
+    downloadGeoJSON(
+      featureCollection(state.parcels),
+      `lahan_semua_${dateStamp()}.geojson`
+    );
+  }
+
+  function dateStamp() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    return (
+      d.getFullYear() +
+      p(d.getMonth() + 1) +
+      p(d.getDate()) +
+      "_" +
+      p(d.getHours()) +
+      p(d.getMinutes())
+    );
+  }
+
+  async function copyActiveGeoJSON() {
+    let obj;
+    const f = buildFeatureFromActive();
+    if (f) obj = featureCollection([f]);
+    else if (state.parcels.length) obj = featureCollection(state.parcels);
+    else {
+      toast("Tidak ada data untuk disalin", true);
+      return;
+    }
+    const text = JSON.stringify(obj, null, 2);
+    els.geojsonPreview.hidden = false;
+    els.geojsonPreview.textContent = text.slice(0, 2000) + (text.length > 2000 ? "\n…" : "");
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("GeoJSON disalin ke clipboard");
+    } catch (_) {
+      toast("Gagal salin otomatis — salin manual dari pratinjau", true);
+    }
+  }
+
+  function importGeoJSONFile(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        const features = normalizeImported(data);
+        if (!features.length) {
+          toast("Tidak ada poligon di file", true);
+          return;
+        }
+        features.forEach((f) => {
+          if (!f.properties) f.properties = {};
+          if (!f.properties.id) f.properties.id = uid();
+          if (!f.properties.name) f.properties.name = "Impor lahan";
+          // recompute area if missing
+          if (f.geometry && f.geometry.type === "Polygon") {
+            const ring = f.geometry.coordinates[0] || [];
+            const pts = ring.slice(0, -1).map((c) => ({ lat: c[1], lng: c[0] }));
+            if (pts.length >= 3) {
+              f.properties.area_m2 =
+                Math.round(polygonArea(pts) * 100) / 100;
+              f.properties.area_ha =
+                Math.round((f.properties.area_m2 / 10000) * 10000) / 10000;
+              f.properties.perimeter_m =
+                Math.round(perimeter(pts, true) * 100) / 100;
+              f.properties.vertex_count = pts.length;
+            }
+          }
+          state.parcels.push(f);
+        });
+        saveParcels();
+        renderParcelsOnMap();
+        // fit bounds
+        const all = [];
+        state.parcels.forEach((p) => {
+          (p.geometry.coordinates[0] || []).forEach((c) => all.push([c[1], c[0]]));
+        });
+        if (all.length) map.fitBounds(all, { padding: [40, 40] });
+        toast(features.length + " lahan diimpor");
+      } catch (e) {
+        toast("File GeoJSON tidak valid", true);
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  function normalizeImported(data) {
+    const out = [];
+    if (!data) return out;
+    if (data.type === "FeatureCollection" && Array.isArray(data.features)) {
+      data.features.forEach((f) => {
+        if (f && f.geometry && f.geometry.type === "Polygon") out.push(f);
+        else if (f && f.geometry && f.geometry.type === "MultiPolygon") {
+          f.geometry.coordinates.forEach((poly, i) => {
+            out.push({
+              type: "Feature",
+              properties: {
+                ...(f.properties || {}),
+                name:
+                  (f.properties && f.properties.name
+                    ? f.properties.name + " #" + (i + 1)
+                    : "Multi " + (i + 1)),
+              },
+              geometry: { type: "Polygon", coordinates: poly },
+            });
+          });
+        }
+      });
+    } else if (data.type === "Feature" && data.geometry) {
+      if (data.geometry.type === "Polygon") out.push(data);
+    } else if (data.type === "Polygon") {
+      out.push({ type: "Feature", properties: {}, geometry: data });
+    }
+    return out;
+  }
+
+  // ---------- Parcels list UI ----------
+  function renderParcelsList() {
+    const list = els.parcelsList;
+    list.innerHTML = "";
+    if (!state.parcels.length) {
+      list.innerHTML = '<div class="empty-state">Belum ada lahan tersimpan.<br>Gambar poligon lalu simpan.</div>';
+      return;
+    }
+    state.parcels.forEach((p, idx) => {
+      const item = document.createElement("div");
+      item.className = "parcel-item";
+      const area = p.properties.area_m2
+        ? formatArea(p.properties.area_m2)
+        : "—";
+      const left = document.createElement("div");
+      left.innerHTML = `<h3>${escapeHtml(p.properties.name || "Tanpa nama")}</h3>
+        <p>${escapeHtml(p.properties.land_type || "")} · ${area}
+        ${p.properties.owner ? " · " + escapeHtml(p.properties.owner) : ""}</p>`;
+      const actions = document.createElement("div");
+      actions.className = "parcel-actions";
+      const btnFocus = document.createElement("button");
+      btnFocus.type = "button";
+      btnFocus.textContent = "Lihat";
+      btnFocus.onclick = () => {
+        const coords = p.geometry.coordinates[0].map((c) => [c[1], c[0]]);
+        map.fitBounds(coords, { padding: [50, 50], maxZoom: 19 });
+        closeAllSheets();
+      };
+      const btnDl = document.createElement("button");
+      btnDl.type = "button";
+      btnDl.textContent = "GeoJSON";
+      btnDl.onclick = () => {
+        const name = (p.properties.name || "lahan")
+          .replace(/[^\w\-]+/g, "_")
+          .slice(0, 40);
+        downloadGeoJSON(featureCollection([p]), `lahan_${name}.geojson`);
+      };
+      const btnDel = document.createElement("button");
+      btnDel.type = "button";
+      btnDel.className = "danger";
+      btnDel.textContent = "Hapus";
+      btnDel.onclick = () => {
+        if (!confirm("Hapus lahan ini?")) return;
+        state.parcels.splice(idx, 1);
+        saveParcels();
+        renderParcelsOnMap();
+        renderParcelsList();
+        toast("Lahan dihapus");
+      };
+      actions.append(btnFocus, btnDl, btnDel);
+      item.append(left, actions);
+      list.appendChild(item);
+    });
+  }
+
+  // ---------- Event wiring ----------
+  function bindEvents() {
+    els.btnLocate.addEventListener("click", () => locateOnce(true));
+    els.btnAddPoint.addEventListener("click", () => {
+      if (state.walkMode) {
+        stopWalkMode();
+        updateWalkLabel();
+        toast("Mode jalan dihentikan");
+        return;
+      }
+      addPointFromGps(false);
+    });
+    els.btnUndo.addEventListener("click", undoPoint);
+    els.btnClose.addEventListener("click", closePolygon);
+    els.btnMore.addEventListener("click", () => openSheet("moreSheet"));
+    els.btnLayers.addEventListener("click", () => openSheet("layersSheet"));
+    els.btnHelp.addEventListener("click", () => openSheet("helpSheet"));
+
+    document.querySelectorAll("[data-close]").forEach((el) => {
+      el.addEventListener("click", () => closeSheet(el.getAttribute("data-close")));
+    });
+
+    $("btnTapMode").addEventListener("click", () => {
+      state.tapMode = !state.tapMode;
+      updateTapLabel();
+      toast(state.tapMode ? "Mode ketuk AKTIF" : "Mode ketuk nonaktif");
+      map.getContainer().style.cursor = state.tapMode ? "crosshair" : "";
+    });
+
+    $("btnWalkMode").addEventListener("click", () => {
+      toggleWalkMode();
+      closeSheet("moreSheet");
+    });
+
+    $("btnEditMeta").addEventListener("click", () => {
+      closeSheet("moreSheet");
+      openMeta();
+    });
+    $("btnSaveMeta").addEventListener("click", saveMetaFromForm);
+
+    $("btnSaveParcel").addEventListener("click", () => {
+      closeSheet("moreSheet");
+      saveActiveParcel();
+    });
+
+    $("btnParcels").addEventListener("click", () => {
+      closeSheet("moreSheet");
+      renderParcelsList();
+      openSheet("parcelsSheet");
+    });
+
+    $("btnExport").addEventListener("click", () => {
+      closeSheet("moreSheet");
+      els.geojsonPreview.hidden = true;
+      openSheet("exportSheet");
+    });
+
+    $("btnExportActive").addEventListener("click", exportActive);
+    $("btnExportSaved").addEventListener("click", exportAll);
+    $("btnExportAll").addEventListener("click", exportAll);
+    $("btnCopyGeoJSON").addEventListener("click", copyActiveGeoJSON);
+
+    $("btnImport").addEventListener("click", () => {
+      closeSheet("moreSheet");
+      els.fileImport.click();
+    });
+    els.fileImport.addEventListener("change", () => {
+      const f = els.fileImport.files && els.fileImport.files[0];
+      if (f) importGeoJSONFile(f);
+      els.fileImport.value = "";
+    });
+
+    $("btnClear").addEventListener("click", () => {
+      closeSheet("moreSheet");
+      clearActive();
+    });
+
+    $("btnClearAll").addEventListener("click", () => {
+      if (!state.parcels.length) return;
+      if (!confirm("Hapus SEMUA lahan tersimpan?")) return;
+      state.parcels = [];
+      saveParcels();
+      renderParcelsOnMap();
+      renderParcelsList();
+      toast("Semua lahan dihapus");
+    });
+
+    document.querySelectorAll('input[name="basemap"]').forEach((r) => {
+      r.addEventListener("change", () => {
+        if (r.checked) setBasemap(r.value);
+      });
+    });
+
+    els.accuracyThreshold.addEventListener("change", () => {
+      let v = parseInt(els.accuracyThreshold.value, 10);
+      if (isNaN(v)) v = 15;
+      v = Math.min(100, Math.max(3, v));
+      els.accuracyThreshold.value = v;
+      state.settings.accuracyThreshold = v;
+      saveSettings();
+    });
+    els.walkInterval.addEventListener("change", () => {
+      let v = parseInt(els.walkInterval.value, 10);
+      if (isNaN(v)) v = 5;
+      v = Math.min(60, Math.max(2, v));
+      els.walkInterval.value = v;
+      state.settings.walkInterval = v;
+      saveSettings();
+      if (state.walkMode) {
+        stopWalkMode();
+        startWalkMode();
+      }
+    });
+    els.highAccuracy.addEventListener("change", () => {
+      state.settings.highAccuracy = els.highAccuracy.checked;
+      saveSettings();
+      // restart watch with new options
+      if (state.watchId != null) {
+        navigator.geolocation.clearWatch(state.watchId);
+        state.watchId = null;
+        startWatch();
+      }
+    });
+
+    map.on("click", (e) => {
+      if (!state.tapMode) return;
+      addPointFromTap(e.latlng);
+    });
+
+    // prevent double-tap zoom delay feel on buttons
+    document.querySelectorAll("button").forEach((b) => {
+      b.addEventListener(
+        "touchend",
+        (e) => {
+          // let click fire; just stop ghost clicks on map under sheets
+          if (b.closest(".sheet-panel") || b.closest(".toolbar") || b.closest(".topbar")) {
+            e.stopPropagation();
+          }
+        },
+        { passive: true }
+      );
+    });
+
+    // keyboard helpers (desktop)
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeAllSheets();
+      if (e.target.matches("input, textarea, select")) return;
+      if (e.key === "z" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        undoPoint();
+      }
+    });
+
+    // PWA-ish: register empty SW skip — optional none
+
+    window.addEventListener("beforeunload", () => {
+      if (state.points.length && !state.closed) {
+        // browsers may ignore custom msg
+        return "Gambar belum disimpan";
+      }
+    });
+  }
+
+  // ---------- Boot ----------
+  function init() {
+    loadSettings();
+    loadParcels();
+    bindEvents();
+    updateTapLabel();
+    updateWalkLabel();
+    redraw();
+    startWatch();
+    // try initial center
+    locateOnce(true);
+
+    if ("serviceWorker" in navigator) {
+      // optional offline shell
+      navigator.serviceWorker.register("./sw.js").catch(() => {});
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();

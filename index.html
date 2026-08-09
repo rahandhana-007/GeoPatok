@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f766e" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="description" content="Aplikasi mapping lahan akurat via GPS smartphone — ekspor GeoJSON" />
+  <title>LahanMapper — Mapping Lahan GPS</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f766e'/%3E%3Cpath d='M14 42 L32 14 L50 42 Z' fill='none' stroke='%23a7f3d0' stroke-width='4' stroke-linejoin='round'/%3E%3Ccircle cx='32' cy='36' r='4' fill='%23fbbf24'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">◈</span>
+        <div>
+          <h1>LahanMapper</h1>
+          <p class="subtitle" id="statusText">Siap memetakan</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button type="button" id="btnLayers" class="icon-btn" title="Lapisan peta" aria-label="Lapisan peta">☰</button>
+        <button type="button" id="btnHelp" class="icon-btn" title="Bantuan" aria-label="Bantuan">?</button>
+      </div>
+    </header>
+
+    <!-- Map -->
+    <main id="map" role="application" aria-label="Peta lahan"></main>
+
+    <!-- GPS accuracy badge -->
+    <div id="gpsBadge" class="gps-badge" hidden>
+      <span class="gps-dot" id="gpsDot"></span>
+      <span id="gpsLabel">GPS —</span>
+    </div>
+
+    <!-- Area / stats floating card -->
+    <div id="statsCard" class="stats-card" hidden>
+      <div class="stat">
+        <span class="stat-label">Titik</span>
+        <span class="stat-value" id="statPoints">0</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Keliling</span>
+        <span class="stat-value" id="statPerimeter">0 m</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Luas</span>
+        <span class="stat-value" id="statArea">0 m²</span>
+      </div>
+    </div>
+
+    <!-- Bottom toolbar -->
+    <nav class="toolbar" aria-label="Kontrol mapping">
+      <button type="button" id="btnLocate" class="tool-btn" title="Lokasi saya">
+        <span class="tool-icon">◎</span>
+        <span class="tool-label">Lokasi</span>
+      </button>
+      <button type="button" id="btnAddPoint" class="tool-btn primary" title="Tambah titik di posisi GPS">
+        <span class="tool-icon">＋</span>
+        <span class="tool-label">Titik GPS</span>
+      </button>
+      <button type="button" id="btnUndo" class="tool-btn" title="Batalkan titik terakhir" disabled>
+        <span class="tool-icon">↩</span>
+        <span class="tool-label">Undo</span>
+      </button>
+      <button type="button" id="btnClose" class="tool-btn" title="Tutup poligon" disabled>
+        <span class="tool-icon">⬡</span>
+        <span class="tool-label">Tutup</span>
+      </button>
+      <button type="button" id="btnMore" class="tool-btn" title="Menu lainnya">
+        <span class="tool-icon">⋯</span>
+        <span class="tool-label">Lainnya</span>
+      </button>
+    </nav>
+
+    <!-- More menu sheet -->
+    <div id="moreSheet" class="sheet" hidden>
+      <div class="sheet-backdrop" data-close="moreSheet"></div>
+      <div class="sheet-panel" role="dialog" aria-label="Menu lainnya">
+        <div class="sheet-handle"></div>
+        <h2>Menu</h2>
+        <div class="menu-list">
+          <button type="button" id="btnTapMode" class="menu-item">
+            <span class="menu-icon">👆</span>
+            <div>
+              <strong>Mode ketuk peta</strong>
+              <small id="tapModeLabel">Nonaktif — ketuk peta untuk menambah titik</small>
+            </div>
+          </button>
+          <button type="button" id="btnWalkMode" class="menu-item">
+            <span class="menu-icon">🚶</span>
+            <div>
+              <strong>Mode jalan otomatis</strong>
+              <small id="walkModeLabel">Nonaktif — rekam titik sambil berjalan</small>
+            </div>
+          </button>
+          <button type="button" id="btnEditMeta" class="menu-item">
+            <span class="menu-icon">✎</span>
+            <div>
+              <strong>Info lahan</strong>
+              <small>Nama, pemilik, keterangan</small>
+            </div>
+          </button>
+          <button type="button" id="btnSaveParcel" class="menu-item">
+            <span class="menu-icon">💾</span>
+            <div>
+              <strong>Simpan ke daftar</strong>
+              <small>Simpan poligon saat ini sebagai lahan</small>
+            </div>
+          </button>
+          <button type="button" id="btnParcels" class="menu-item">
+            <span class="menu-icon">📋</span>
+            <div>
+              <strong>Daftar lahan</strong>
+              <small id="parcelCountLabel">0 lahan tersimpan</small>
+            </div>
+          </button>
+          <button type="button" id="btnExport" class="menu-item accent">
+            <span class="menu-icon">⬇</span>
+            <div>
+              <strong>Unduh GeoJSON</strong>
+              <small>Ekspor lahan aktif / semua lahan</small>
+            </div>
+          </button>
+          <button type="button" id="btnImport" class="menu-item">
+            <span class="menu-icon">⬆</span>
+            <div>
+              <strong>Impor GeoJSON</strong>
+              <small>Muat file GeoJSON yang sudah ada</small>
+            </div>
+          </button>
+          <button type="button" id="btnClear" class="menu-item danger">
+            <span class="menu-icon">🗑</span>
+            <div>
+              <strong>Hapus gambar aktif</strong>
+              <small>Mulai ulang poligon saat ini</small>
+            </div>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Layers sheet -->
+    <div id="layersSheet" class="sheet" hidden>
+      <div class="sheet-backdrop" data-close="layersSheet"></div>
+      <div class="sheet-panel" role="dialog" aria-label="Lapisan peta">
+        <div class="sheet-handle"></div>
+        <h2>Lapisan peta</h2>
+        <div class="menu-list" id="basemapList">
+          <label class="radio-item">
+            <input type="radio" name="basemap" value="osm" checked />
+            <span>OpenStreetMap</span>
+          </label>
+          <label class="radio-item">
+            <input type="radio" name="basemap" value="satellite" />
+            <span>Satelit (Esri)</span>
+          </label>
+          <label class="radio-item">
+            <input type="radio" name="basemap" value="topo" />
+            <span>Topografi</span>
+          </label>
+        </div>
+        <h3 class="section-title">Akurasi GPS</h3>
+        <label class="field">
+          <span>Ambang akurasi maksimal (meter)</span>
+          <input type="number" id="accuracyThreshold" min="3" max="100" step="1" value="15" />
+          <small>Titik ditolak jika akurasi GPS lebih buruk dari nilai ini</small>
+        </label>
+        <label class="field">
+          <span>Interval mode jalan (detik)</span>
+          <input type="number" id="walkInterval" min="2" max="60" step="1" value="5" />
+        </label>
+        <label class="field checkbox-field">
+          <input type="checkbox" id="highAccuracy" checked />
+          <span>Paksa high-accuracy GPS (disarankan)</span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Meta sheet -->
+    <div id="metaSheet" class="sheet" hidden>
+      <div class="sheet-backdrop" data-close="metaSheet"></div>
+      <div class="sheet-panel" role="dialog" aria-label="Info lahan">
+        <div class="sheet-handle"></div>
+        <h2>Info lahan</h2>
+        <label class="field">
+          <span>Nama lahan</span>
+          <input type="text" id="metaName" placeholder="contoh: Sawah Blok A" maxlength="120" />
+        </label>
+        <label class="field">
+          <span>Pemilik / pengelola</span>
+          <input type="text" id="metaOwner" placeholder="opsional" maxlength="120" />
+        </label>
+        <label class="field">
+          <span>Jenis lahan</span>
+          <select id="metaType">
+            <option value="pertanian">Pertanian</option>
+            <option value="perkebunan">Perkebunan</option>
+            <option value="pemukiman">Pemukiman</option>
+            <option value="hutan">Hutan</option>
+            <option value="tambak">Tambak</option>
+            <option value="lainnya">Lainnya</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Keterangan</span>
+          <textarea id="metaNotes" rows="3" placeholder="catatan tambahan" maxlength="500"></textarea>
+        </label>
+        <button type="button" id="btnSaveMeta" class="btn-block primary">Simpan info</button>
+      </div>
+    </div>
+
+    <!-- Parcels list sheet -->
+    <div id="parcelsSheet" class="sheet" hidden>
+      <div class="sheet-backdrop" data-close="parcelsSheet"></div>
+      <div class="sheet-panel" role="dialog" aria-label="Daftar lahan">
+        <div class="sheet-handle"></div>
+        <h2>Daftar lahan</h2>
+        <div id="parcelsList" class="parcels-list"></div>
+        <button type="button" id="btnExportAll" class="btn-block primary" style="margin-top:12px">Unduh semua (GeoJSON)</button>
+        <button type="button" id="btnClearAll" class="btn-block danger-outline" style="margin-top:8px">Hapus semua lahan</button>
+      </div>
+    </div>
+
+    <!-- Export sheet -->
+    <div id="exportSheet" class="sheet" hidden>
+      <div class="sheet-backdrop" data-close="exportSheet"></div>
+      <div class="sheet-panel" role="dialog" aria-label="Unduh GeoJSON">
+        <div class="sheet-handle"></div>
+        <h2>Unduh GeoJSON</h2>
+        <p class="hint">Pilih apa yang ingin diunduh. File bisa dibuka di QGIS, ArcGIS, Google Earth, Mapbox, dll.</p>
+        <button type="button" id="btnExportActive" class="btn-block primary">Unduh poligon aktif</button>
+        <button type="button" id="btnExportSaved" class="btn-block" style="margin-top:8px">Unduh semua lahan tersimpan</button>
+        <button type="button" id="btnCopyGeoJSON" class="btn-block outline" style="margin-top:8px">Salin GeoJSON ke clipboard</button>
+        <pre id="geojsonPreview" class="geojson-preview" hidden></pre>
+      </div>
+    </div>
+
+    <!-- Help sheet -->
+    <div id="helpSheet" class="sheet" hidden>
+      <div class="sheet-backdrop" data-close="helpSheet"></div>
+      <div class="sheet-panel" role="dialog" aria-label="Bantuan">
+        <div class="sheet-handle"></div>
+        <h2>Cara memakai</h2>
+        <ol class="help-list">
+          <li><strong>Izinkan lokasi</strong> saat diminta browser agar GPS aktif.</li>
+          <li>Tekan <strong>Lokasi</strong> agar peta mengarah ke posisi Anda.</li>
+          <li>Berdiri di sudut lahan, tekan <strong>Titik GPS</strong>. Ulangi di setiap sudut secara berurutan.</li>
+          <li>Atau aktifkan <strong>Mode jalan</strong> lalu kelilingi batas lahan — titik terekam otomatis.</li>
+          <li>Minimal 3 titik, lalu tekan <strong>Tutup</strong> untuk membentuk poligon.</li>
+          <li>Isi info lahan, simpan ke daftar, lalu <strong>Unduh GeoJSON</strong>.</li>
+        </ol>
+        <h3 class="section-title">Tips akurasi</h3>
+        <ul class="help-list bullets">
+          <li>Gunakan di area terbuka (langit cerah), jauh dari gedung tinggi.</li>
+          <li>Tunggu badge GPS hijau (akurasi bagus) sebelum menambah titik.</li>
+          <li>Mode satelit membantu menyesuaikan batas visual.</li>
+          <li>Berdiri diam 3–5 detik di setiap sudut sebelum merekam titik.</li>
+          <li>Untuk hasil survei formal, verifikasi ulang di lapangan / software GIS.</li>
+        </ul>
+        <p class="hint">Data tersimpan lokal di perangkat Anda (localStorage). Tidak dikirim ke server.</p>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast" hidden role="status" aria-live="polite"></div>
+
+    <!-- Hidden file input -->
+    <input type="file" id="fileImport" accept=".geojson,.json,application/geo+json,application/json" hidden />
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="app.js"></script>
+</body>
+</html>
