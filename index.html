@@ -99,7 +99,7 @@
             <span class="menu-icon">🚶</span>
             <div>
               <strong>Mode jalan otomatis</strong>
-              <small id="walkModeLabel">Nonaktif — rekam titik sambil berjalan</small>
+              <small id="walkModeLabel">Nonaktif — rekam banyak titik; Tutup = sederhanakan ke 8</small>
             </div>
           </button>
           <button type="button" id="btnEditMeta" class="menu-item">
@@ -177,6 +177,7 @@
         <label class="field">
           <span>Interval mode jalan (detik)</span>
           <input type="number" id="walkInterval" min="2" max="60" step="1" value="5" />
+          <small>Banyak titik boleh terekam; saat Tutup disederhanakan ke 8 titik kunci</small>
         </label>
         <label class="field checkbox-field">
           <input type="checkbox" id="highAccuracy" checked />
@@ -254,8 +255,8 @@
           <li><strong>Izinkan lokasi</strong> saat diminta browser agar GPS aktif.</li>
           <li>Tekan <strong>Lokasi</strong> agar peta mengarah ke posisi Anda.</li>
           <li>Berdiri di sudut lahan, tekan <strong>Titik GPS</strong>. Ulangi di setiap sudut secara berurutan.</li>
-          <li>Atau aktifkan <strong>Mode jalan</strong> lalu kelilingi batas lahan — titik terekam otomatis.</li>
-          <li>Minimal 3 titik, lalu tekan <strong>Tutup</strong> untuk membentuk poligon.</li>
+          <li>Atau aktifkan <strong>Mode jalan</strong> lalu kelilingi batas lahan — app merekam banyak titik.</li>
+          <li>Tekan <strong>Tutup</strong>: jika titik &gt; 8, app menyederhanakan ke <strong>8 titik paling mewakili</strong> lalu membentuk poligon.</li>
           <li>Isi info lahan, simpan ke daftar, lalu <strong>Unduh GeoJSON</strong>.</li>
         </ol>
         <h3 class="section-title">Tips akurasi</h3>

@@ -10,6 +10,8 @@
   const STORAGE_KEY = "geopatok_parcels_v1";
   const SETTINGS_KEY = "geopatok_settings_v1";
   const APP_NAME = "GeoPatok";
+  /** Saat Tutup: sederhanakan poligon ke N titik paling mewakili (jika lebih banyak) */
+  const CLOSE_TARGET_POINTS = 8;
 
   const state = {
     points: [], // [{lat, lng, accuracy, altitude, timestamp}]
@@ -637,17 +639,26 @@
       const last = state.points[state.points.length - 1];
       if (haversine(last, p) < 0.5) {
         toast("Titik terlalu dekat dengan sebelumnya");
-        return;
+        return false;
       }
     }
     state.points.push(p);
     redraw();
-    toast(`Titik ${state.points.length} ditambahkan` + (p.accuracy != null ? ` (±${Math.round(p.accuracy)} m)` : ""));
+    const n = state.points.length;
+    toast(
+      `Titik ${n} ditambahkan` +
+        (p.accuracy != null ? ` (±${Math.round(p.accuracy)} m)` : "") +
+        (state.walkMode ? " · mode jalan" : "")
+    );
+    if (state.walkMode) {
+      setStatus(`Mode jalan · ${n} titik`);
+    }
     // keep map roughly centered on last point if far
     const z = map.getZoom();
     if (z >= 16) {
       map.panTo([p.lat, p.lng], { animate: true });
     }
+    return true;
   }
 
   function undoPoint() {
@@ -667,12 +678,104 @@
       toast("Minimal 3 titik untuk menutup poligon", true);
       return;
     }
-    state.closed = true;
     if (state.walkMode) stopWalkMode();
+
+    const before = state.points.length;
+    // Sederhanakan ke 8 titik paling mewakili (Visvalingam–Whyatt)
+    if (before > CLOSE_TARGET_POINTS) {
+      state.points = simplifyClosedRing(state.points, CLOSE_TARGET_POINTS);
+      toast(
+        `Disederhanakan: ${before} → ${state.points.length} titik paling mewakili`
+      );
+    }
+
+    state.closed = true;
     redraw();
     const area = polygonArea(state.points);
-    setStatus("Poligon ditutup — " + formatHa(area));
-    toast("Poligon ditutup. Luas: " + formatHa(area) + " · " + formatM2(area));
+    setStatus(
+      "Poligon ditutup — " +
+        formatHa(area) +
+        (before > CLOSE_TARGET_POINTS
+          ? ` · ${state.points.length} titik`
+          : "")
+    );
+    toast(
+      "Poligon ditutup. Luas: " +
+        formatHa(area) +
+        " · " +
+        formatM2(area) +
+        (before > CLOSE_TARGET_POINTS
+          ? ` · ${before}→${state.points.length} titik`
+          : "")
+    );
+  }
+
+  /**
+   * Reduce a closed polygon ring to exactly `target` vertices that best
+   * preserve shape (Visvalingam–Whyatt: drop least-significant vertices).
+   * Importance = area of triangle (prev, vertex, next) in local meters.
+   */
+  function simplifyClosedRing(points, target) {
+    if (points.length <= target) return points.slice();
+    if (target < 3) target = 3;
+
+    // Working copy with stable ids for debugging
+    let pts = points.map((p, i) => ({
+      lat: p.lat,
+      lng: p.lng,
+      accuracy: p.accuracy,
+      altitude: p.altitude,
+      timestamp: p.timestamp,
+      source: p.source || "gps",
+      _i: i,
+    }));
+
+    // Origin for local ENU projection (meters) — better than raw lat/lng areas
+    const origin = centroid(pts);
+
+    function localXY(p) {
+      const lat0 = toRad(origin.lat);
+      return {
+        x: R * toRad(p.lng - origin.lng) * Math.cos(lat0),
+        y: R * toRad(p.lat - origin.lat),
+      };
+    }
+
+    function effectiveArea(prev, curr, next) {
+      const a = localXY(prev);
+      const b = localXY(curr);
+      const c = localXY(next);
+      // triangle area (m²)
+      return Math.abs(
+        (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y)) / 2
+      );
+    }
+
+    while (pts.length > target) {
+      let minArea = Infinity;
+      let minIdx = 0;
+      for (let i = 0; i < pts.length; i++) {
+        const prev = pts[(i - 1 + pts.length) % pts.length];
+        const curr = pts[i];
+        const next = pts[(i + 1) % pts.length];
+        const area = effectiveArea(prev, curr, next);
+        if (area < minArea) {
+          minArea = area;
+          minIdx = i;
+        }
+      }
+      pts.splice(minIdx, 1);
+    }
+
+    // Preserve ring order; mark simplified source
+    return pts.map((p) => ({
+      lat: p.lat,
+      lng: p.lng,
+      accuracy: p.accuracy,
+      altitude: p.altitude,
+      timestamp: p.timestamp,
+      source: p.source === "tap" || p.source === "drag" ? p.source : "simplified",
+    }));
   }
 
   function clearActive() {
@@ -700,8 +803,9 @@
     }
     state.walkMode = true;
     els.btnAddPoint.classList.add("recording");
-    setStatus("Mode jalan aktif — kelilingi lahan");
-    toast("Mode jalan ON. Berjalanlah di sepanjang batas.");
+    const n0 = state.points.length;
+    setStatus(`Mode jalan · ${n0} titik — kelilingi lahan`);
+    toast("Mode jalan ON. Ikuti batas lahan. Tekan Tutup → jadi 8 titik kunci.");
     // take immediate point
     addPointFromGps(false);
     const ms = Math.max(2, state.settings.walkInterval) * 1000;
@@ -713,6 +817,7 @@
       addPointFromGps(true);
     }, ms);
     updateButtons();
+    updateWalkLabel();
   }
 
   function stopWalkMode() {
@@ -722,14 +827,21 @@
       state.walkTimer = null;
     }
     els.btnAddPoint.classList.remove("recording");
-    setStatus(state.closed ? "Poligon ditutup" : "Mode jalan berhenti");
+    if (!state.closed) {
+      const n = state.points.length;
+      setStatus(
+        n > 0 ? `Mode jalan berhenti · ${n} titik` : "Mode jalan berhenti"
+      );
+    } else {
+      setStatus("Poligon ditutup");
+    }
     updateButtons();
   }
 
   function updateWalkLabel() {
     els.walkModeLabel.textContent = state.walkMode
-      ? "AKTIF — tekan lagi untuk berhenti"
-      : "Nonaktif — rekam titik sambil berjalan";
+      ? `AKTIF · ${state.points.length} titik — tekan lagi untuk berhenti`
+      : "Nonaktif — rekam banyak titik; Tutup = sederhanakan ke 8";
   }
 
   function updateTapLabel() {
