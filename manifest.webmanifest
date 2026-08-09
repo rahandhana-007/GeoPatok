@@ -1,7 +1,7 @@
 {
-  "name": "LahanMapper — Mapping Lahan GPS",
-  "short_name": "LahanMapper",
-  "description": "Aplikasi mapping lahan akurat via GPS smartphone dengan ekspor GeoJSON",
+  "name": "GeoPatok — Solusi pemetaan lahan Anda",
+  "short_name": "GeoPatok",
+  "description": "GeoPatok — Solusi pemetaan lahan Anda. Mapping GPS akurat dari smartphone, hasil unduh GeoJSON.",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#0b1220",
@@ -10,7 +10,7 @@
   "lang": "id",
   "icons": [
     {
-      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f766e'/%3E%3Cpath d='M14 42 L32 14 L50 42 Z' fill='none' stroke='%23a7f3d0' stroke-width='4' stroke-linejoin='round'/%3E%3Ccircle cx='32' cy='36' r='4' fill='%23fbbf24'/%3E%3C/svg%3E",
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f766e'/%3E%3Ccircle cx='32' cy='28' r='14' fill='none' stroke='%23a7f3d0' stroke-width='3'/%3E%3Ccircle cx='32' cy='28' r='5' fill='%23fbbf24'/%3E%3Cpath d='M32 42 V52' stroke='%23a7f3d0' stroke-width='3' stroke-linecap='round'/%3E%3Cpath d='M24 52 H40' stroke='%23a7f3d0' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any maskable"

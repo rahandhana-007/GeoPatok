@@ -1,13 +1,15 @@
 /**
- * LahanMapper — accurate smartphone land mapping → GeoJSON
+ * GeoPatok — Solusi pemetaan lahan Anda
+ * Accurate smartphone land mapping → GeoJSON
  * All data stays local (localStorage). No backend required.
  */
 (function () {
   "use strict";
 
   // ---------- Constants & state ----------
-  const STORAGE_KEY = "lahanmapper_parcels_v1";
-  const SETTINGS_KEY = "lahanmapper_settings_v1";
+  const STORAGE_KEY = "geopatok_parcels_v1";
+  const SETTINGS_KEY = "geopatok_settings_v1";
+  const APP_NAME = "GeoPatok";
 
   const state = {
     points: [], // [{lat, lng, accuracy, altitude, timestamp}]
@@ -42,7 +44,8 @@
     statsCard: $("statsCard"),
     statPoints: $("statPoints"),
     statPerimeter: $("statPerimeter"),
-    statArea: $("statArea"),
+    statAreaHa: $("statAreaHa"),
+    statAreaM2: $("statAreaM2"),
     btnLocate: $("btnLocate"),
     btnAddPoint: $("btnAddPoint"),
     btnUndo: $("btnUndo"),
@@ -245,14 +248,41 @@
     return m.toFixed(1) + " m";
   }
 
-  function formatArea(m2) {
-    if (m2 >= 10000) {
-      // hectares
-      const ha = m2 / 10000;
-      return ha >= 10 ? ha.toFixed(2) + " ha" : ha.toFixed(3) + " ha";
-    }
-    if (m2 >= 1) return Math.round(m2) + " m²";
+  /** Convert m² → hectares (1 Ha = 10.000 m²) */
+  function toHectares(m2) {
+    return m2 / 10000;
+  }
+
+  /** Always format as hectares, e.g. 0.1523 Ha / 12.45 Ha */
+  function formatHa(m2) {
+    if (!isFinite(m2) || m2 <= 0) return "0 Ha";
+    const ha = toHectares(m2);
+    if (ha >= 100) return ha.toFixed(2) + " Ha";
+    if (ha >= 1) return ha.toFixed(3) + " Ha";
+    if (ha >= 0.01) return ha.toFixed(4) + " Ha";
+    return ha.toFixed(6) + " Ha";
+  }
+
+  /** Square meters, compact */
+  function formatM2(m2) {
+    if (!isFinite(m2) || m2 <= 0) return "0 m²";
+    if (m2 >= 100) return Math.round(m2).toLocaleString("id-ID") + " m²";
+    if (m2 >= 1) return (Math.round(m2 * 10) / 10).toLocaleString("id-ID") + " m²";
     return m2.toFixed(2) + " m²";
+  }
+
+  /** Combined label for lists/popups: "0,1523 Ha (1.523 m²)" */
+  function formatArea(m2) {
+    if (!isFinite(m2) || m2 <= 0) return "0 Ha";
+    return formatHa(m2) + " (" + formatM2(m2) + ")";
+  }
+
+  function roundHa(m2) {
+    const ha = toHectares(m2);
+    // keep useful precision for small parcels
+    if (ha >= 10) return Math.round(ha * 1000) / 1000;
+    if (ha >= 1) return Math.round(ha * 10000) / 10000;
+    return Math.round(ha * 1000000) / 1000000;
   }
 
   function centroid(points) {
@@ -319,6 +349,28 @@
         fillColor: "#14b8a6",
         fillOpacity: 0.22,
       }).addTo(drawLayer);
+
+      // Area label (Ha) at centroid of active polygon
+      const c = centroid(pts);
+      if (c) {
+        const area = polygonArea(pts);
+        L.marker([c.lat, c.lng], {
+          icon: L.divIcon({
+            className: "area-label active",
+            html:
+              '<div class="area-label-inner">' +
+              '<span class="area-ha">' +
+              escapeHtml(formatHa(area)) +
+              "</span>" +
+              '<span class="area-m2">' +
+              escapeHtml(formatM2(area)) +
+              "</span></div>",
+            iconSize: null,
+          }),
+          interactive: false,
+          zIndexOffset: 600,
+        }).addTo(drawLayer);
+      }
     } else if (pts.length >= 2) {
       polyline = L.polyline(latlngs, {
         color: "#14b8a6",
@@ -345,9 +397,14 @@
     els.statPoints.textContent = String(n);
     const perim = perimeter(state.points, state.closed);
     els.statPerimeter.textContent = formatDistance(perim);
-    const area =
-      state.closed || n >= 3 ? polygonArea(state.points) : 0;
-    els.statArea.textContent = n >= 3 ? formatArea(area) : "—";
+    const area = n >= 3 ? polygonArea(state.points) : 0;
+    if (n >= 3) {
+      els.statAreaHa.textContent = formatHa(area);
+      els.statAreaM2.textContent = formatM2(area);
+    } else {
+      els.statAreaHa.textContent = "—";
+      els.statAreaM2.textContent = "min. 3 titik";
+    }
     els.statsCard.hidden = n === 0;
   }
 
@@ -360,7 +417,23 @@
   function renderParcelsOnMap() {
     parcelsLayer.clearLayers();
     state.parcels.forEach((parcel) => {
-      const coords = parcel.geometry.coordinates[0].map((c) => [c[1], c[0]]);
+      const ring = parcel.geometry.coordinates[0] || [];
+      const coords = ring.map((c) => [c[1], c[0]]);
+      const pts = ring.slice(0, -1).map((c) => ({ lat: c[1], lng: c[0] }));
+      // Prefer stored area; recompute if missing
+      let areaM2 = parcel.properties.area_m2;
+      if (areaM2 == null && pts.length >= 3) {
+        areaM2 = polygonArea(pts);
+        parcel.properties.area_m2 = Math.round(areaM2 * 100) / 100;
+        parcel.properties.area_ha = roundHa(areaM2);
+      }
+      const areaHa =
+        parcel.properties.area_ha != null
+          ? parcel.properties.area_ha
+          : areaM2 != null
+            ? roundHa(areaM2)
+            : null;
+
       const poly = L.polygon(coords, {
         color: "#6366f1",
         weight: 2,
@@ -368,25 +441,31 @@
         fillOpacity: 0.12,
       });
       const name = parcel.properties.name || "Tanpa nama";
-      const area = parcel.properties.area_m2
-        ? formatArea(parcel.properties.area_m2)
-        : "";
+      const areaText =
+        areaM2 != null ? formatArea(areaM2) : areaHa != null ? areaHa + " Ha" : "—";
       poly.bindPopup(
-        `<strong>${escapeHtml(name)}</strong><br>${area}` +
+        `<strong>${escapeHtml(name)}</strong><br>Luas: ${escapeHtml(areaText)}` +
           (parcel.properties.owner
             ? `<br>${escapeHtml(parcel.properties.owner)}`
             : "")
       );
       poly.addTo(parcelsLayer);
 
-      const c = centroid(
-        coords.map((ll) => ({ lat: ll[0], lng: ll[1] }))
-      );
+      const c = centroid(pts.length ? pts : coords.map((ll) => ({ lat: ll[0], lng: ll[1] })));
       if (c) {
+        const haLabel = areaM2 != null ? formatHa(areaM2) : areaHa != null ? areaHa + " Ha" : "";
         L.marker([c.lat, c.lng], {
           icon: L.divIcon({
-            className: "parcel-label",
-            html: escapeHtml(name),
+            className: "area-label saved",
+            html:
+              '<div class="area-label-inner">' +
+              '<span class="area-name">' +
+              escapeHtml(name) +
+              "</span>" +
+              (haLabel
+                ? '<span class="area-ha">' + escapeHtml(haLabel) + "</span>"
+                : "") +
+              "</div>",
             iconSize: null,
           }),
           interactive: false,
@@ -592,8 +671,8 @@
     if (state.walkMode) stopWalkMode();
     redraw();
     const area = polygonArea(state.points);
-    setStatus("Poligon ditutup — " + formatArea(area));
-    toast("Poligon ditutup. Luas: " + formatArea(area));
+    setStatus("Poligon ditutup — " + formatHa(area));
+    toast("Poligon ditutup. Luas: " + formatHa(area) + " · " + formatM2(area));
   }
 
   function clearActive() {
@@ -708,12 +787,13 @@
         land_type: state.meta.type,
         notes: state.meta.notes || "",
         area_m2: Math.round(area * 100) / 100,
-        area_ha: Math.round((area / 10000) * 10000) / 10000,
+        area_ha: roundHa(area),
+        area_unit: "Ha",
         perimeter_m: Math.round(perim * 100) / 100,
         vertex_count: state.points.length,
         vertices,
         created_at: new Date().toISOString(),
-        app: "LahanMapper",
+        app: APP_NAME,
         crs_note: "WGS84 (EPSG:4326)",
       },
       geometry: {
@@ -757,7 +837,7 @@
   function featureCollection(features) {
     return {
       type: "FeatureCollection",
-      name: "LahanMapper",
+      name: APP_NAME,
       crs: {
         type: "name",
         properties: { name: "urn:ogc:def:crs:OGC:1.3:CRS84" },
@@ -789,7 +869,7 @@
     const name = (f.properties.name || "lahan")
       .replace(/[^\w\-]+/g, "_")
       .slice(0, 40);
-    downloadGeoJSON(featureCollection([f]), `lahan_${name}.geojson`);
+    downloadGeoJSON(featureCollection([f]), `geopatok_${name}.geojson`);
   }
 
   function exportAll() {
@@ -799,7 +879,7 @@
     }
     downloadGeoJSON(
       featureCollection(state.parcels),
-      `lahan_semua_${dateStamp()}.geojson`
+      `geopatok_semua_${dateStamp()}.geojson`
     );
   }
 
@@ -857,8 +937,8 @@
             if (pts.length >= 3) {
               f.properties.area_m2 =
                 Math.round(polygonArea(pts) * 100) / 100;
-              f.properties.area_ha =
-                Math.round((f.properties.area_m2 / 10000) * 10000) / 10000;
+              f.properties.area_ha = roundHa(f.properties.area_m2);
+              f.properties.area_unit = "Ha";
               f.properties.perimeter_m =
                 Math.round(perimeter(pts, true) * 100) / 100;
               f.properties.vertex_count = pts.length;
@@ -923,12 +1003,20 @@
     state.parcels.forEach((p, idx) => {
       const item = document.createElement("div");
       item.className = "parcel-item";
-      const area = p.properties.area_m2
-        ? formatArea(p.properties.area_m2)
-        : "—";
+      let areaM2 = p.properties.area_m2;
+      if (areaM2 == null && p.geometry && p.geometry.coordinates) {
+        const ring = p.geometry.coordinates[0] || [];
+        const pts = ring.slice(0, -1).map((c) => ({ lat: c[1], lng: c[0] }));
+        if (pts.length >= 3) areaM2 = polygonArea(pts);
+      }
+      const areaMain = areaM2 != null ? formatHa(areaM2) : "—";
+      const areaSub = areaM2 != null ? formatM2(areaM2) : "";
       const left = document.createElement("div");
       left.innerHTML = `<h3>${escapeHtml(p.properties.name || "Tanpa nama")}</h3>
-        <p>${escapeHtml(p.properties.land_type || "")} · ${area}
+        <p class="parcel-area"><strong>${escapeHtml(areaMain)}</strong>${
+          areaSub ? " · " + escapeHtml(areaSub) : ""
+        }</p>
+        <p>${escapeHtml(p.properties.land_type || "")}
         ${p.properties.owner ? " · " + escapeHtml(p.properties.owner) : ""}</p>`;
       const actions = document.createElement("div");
       actions.className = "parcel-actions";
@@ -947,7 +1035,7 @@
         const name = (p.properties.name || "lahan")
           .replace(/[^\w\-]+/g, "_")
           .slice(0, 40);
-        downloadGeoJSON(featureCollection([p]), `lahan_${name}.geojson`);
+        downloadGeoJSON(featureCollection([p]), `geopatok_${name}.geojson`);
       };
       const btnDel = document.createElement("button");
       btnDel.type = "button";

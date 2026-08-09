@@ -1,5 +1,5 @@
 /* Minimal service worker — cache app shell for offline reopen */
-const CACHE = "lahanmapper-v1";
+const CACHE = "geopatok-v1";
 const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {
