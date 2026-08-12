@@ -40,6 +40,22 @@
       <span id="gpsLabel">GPS —</span>
     </div>
 
+    <!-- Route / navigation bar -->
+    <div id="routeBar" class="route-bar" hidden>
+      <div class="route-bar-main">
+        <div class="route-bar-icon" aria-hidden="true">➤</div>
+        <div class="route-bar-text">
+          <strong id="routeDestName">Tujuan</strong>
+          <span id="routeMeta">Menghitung rute…</span>
+        </div>
+      </div>
+      <div class="route-bar-actions">
+        <button type="button" id="btnRouteMode" class="route-chip" title="Mode rute">Mobil</button>
+        <button type="button" id="btnOpenMaps" class="route-chip" title="Buka di Google Maps">Maps</button>
+        <button type="button" id="btnClearRoute" class="route-chip danger" title="Hapus rute">✕</button>
+      </div>
+    </div>
+
     <!-- Area / stats floating card -->
     <div id="statsCard" class="stats-card" hidden>
       <div class="stat">
@@ -310,6 +326,7 @@
           <li>Isi info lahan, simpan ke daftar, lalu <strong>Unduh GeoJSON</strong>.</li>
           <li>Pakai <strong>Muat GeoJSON</strong> untuk membuka kembali file yang sudah diunduh atau dari QGIS/app lain.</li>
           <li><strong>Muat data BSRE</strong> menampilkan dataset POLSH BSRE 1119 (1.212 bidang). Ketuk bidang → Edit di GeoPatok.</li>
+          <li>Ketuk poligon → <strong>Set as destination</strong> untuk rute dari lokasi GPS Anda ke lahan tersebut (jalan/mobil via OSRM).</li>
         </ol>
         <h3 class="section-title">Tips akurasi</h3>
         <ul class="help-list bullets">

@@ -646,11 +646,18 @@ body {
 .ds-popup {
   font-size: 0.85rem;
   line-height: 1.4;
-  min-width: 140px;
+  min-width: 160px;
 }
 
-.popup-edit-btn {
-  margin-top: 8px;
+.popup-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.popup-edit-btn,
+.popup-dest-btn {
   width: 100%;
   border: none;
   border-radius: 8px;
@@ -659,8 +666,126 @@ body {
   font-size: 0.78rem;
   font-weight: 700;
   cursor: pointer;
+}
+
+.popup-edit-btn {
   background: linear-gradient(145deg, #14b8a6, #0f766e);
   color: #042f2e;
+}
+
+.popup-dest-btn {
+  background: linear-gradient(145deg, #3b82f6, #1d4ed8);
+  color: #eff6ff;
+}
+
+/* Route bar */
+.route-bar {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(var(--toolbar-h) + var(--safe-b) + 12px);
+  z-index: 450;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(17, 24, 39, 0.96);
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(10px);
+}
+
+.route-bar[hidden] {
+  display: none !important;
+}
+
+.route-bar-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.route-bar-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: rgba(59, 130, 246, 0.2);
+  color: #93c5fd;
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+
+.route-bar-text {
+  min-width: 0;
+  flex: 1;
+}
+
+.route-bar-text strong {
+  display: block;
+  font-size: 0.92rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.route-bar-text span {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.75rem;
+  color: #93c5fd;
+  font-weight: 600;
+}
+
+.route-bar-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.route-chip {
+  flex: 1;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 8px 6px;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.route-chip.danger {
+  flex: 0 0 42px;
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.dest-marker {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  margin-left: -11px;
+  margin-top: -22px;
+  border-radius: 50% 50% 50% 0;
+  background: #3b82f6;
+  border: 2px solid #eff6ff;
+  transform: rotate(-45deg);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+}
+
+.dest-marker::after {
+  content: "";
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: #eff6ff;
+  border-radius: 50%;
+  top: 5px;
+  left: 5px;
 }
 
 .leaflet-popup-content-wrapper {

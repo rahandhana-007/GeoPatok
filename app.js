@@ -78,6 +78,12 @@
     tapModeLabel: $("tapModeLabel"),
     walkModeLabel: $("walkModeLabel"),
     geojsonPreview: $("geojsonPreview"),
+    routeBar: $("routeBar"),
+    routeDestName: $("routeDestName"),
+    routeMeta: $("routeMeta"),
+    btnRouteMode: $("btnRouteMode"),
+    btnOpenMaps: $("btnOpenMaps"),
+    btnClearRoute: $("btnClearRoute"),
   };
 
   // ---------- Map setup ----------
@@ -112,13 +118,27 @@
   const drawLayer = L.layerGroup().addTo(map);
   const parcelsLayer = L.layerGroup().addTo(map);
   const datasetLayer = L.layerGroup().addTo(map); // external / BSRE datasets
+  const routeLayer = L.layerGroup().addTo(map);
   let userMarker = null;
   let accuracyCircle = null;
   let polyline = null;
   let polygon = null;
+  let destMarker = null;
+  let routeLine = null;
   let bsreLoaded = false;
   let bsreLoading = false;
   let bsreFeatureCount = 0;
+  let routeState = {
+    active: false,
+    loading: false,
+    name: "",
+    dest: null, // {lat,lng}
+    mode: "driving", // driving | walking
+    distance_m: null,
+    duration_s: null,
+    provider: null, // osrm | straight
+  };
+  let routeAbort = null;
 
   /** Bundled dataset from Google Drive share */
   const BSRE_DATASET = {
@@ -265,6 +285,17 @@
     if (m >= 1000) return (m / 1000).toFixed(2) + " km";
     if (m >= 100) return Math.round(m) + " m";
     return m.toFixed(1) + " m";
+  }
+
+  /** Route distances always in kilometers */
+  function formatKm(m) {
+    if (m == null || !isFinite(m) || m < 0) return "— km";
+    const km = m / 1000;
+    if (km >= 100) return km.toFixed(1) + " km";
+    if (km >= 10) return km.toFixed(2) + " km";
+    if (km >= 1) return km.toFixed(2) + " km";
+    // short legs still shown as km, e.g. 0.35 km
+    return km.toFixed(2) + " km";
   }
 
   /** Convert m² → hectares (1 Ha = 10.000 m²) */
@@ -462,12 +493,24 @@
       const name = parcel.properties.name || "Tanpa nama";
       const areaText =
         areaM2 != null ? formatArea(areaM2) : areaHa != null ? areaHa + " Ha" : "—";
+      const destId = "dest_p_" + (parcel.properties.id || idx);
       poly.bindPopup(
-        `<strong>${escapeHtml(name)}</strong><br>Luas: ${escapeHtml(areaText)}` +
+        `<div class="ds-popup"><strong>${escapeHtml(name)}</strong><br>Luas: ${escapeHtml(areaText)}` +
           (parcel.properties.owner
             ? `<br>${escapeHtml(parcel.properties.owner)}`
-            : "")
+            : "") +
+          `<div class="popup-actions">` +
+          `<button type="button" class="popup-dest-btn" data-dest-id="${destId}">Set as destination</button>` +
+          `</div></div>`
       );
+      poly.on("popupopen", () => {
+        const btn = document.querySelector(
+          `.popup-dest-btn[data-dest-id="${destId}"]`
+        );
+        if (btn) {
+          btn.onclick = () => destinationFromPolygonLatLngs(coords, name);
+        }
+      });
       poly.addTo(parcelsLayer);
 
       const c = centroid(pts.length ? pts : coords.map((ll) => ({ lat: ll[0], lng: ll[1] })));
@@ -1134,6 +1177,353 @@
     updateBsreLabel();
   }
 
+  // ---------- Navigation / routing ----------
+  function formatDuration(sec) {
+    if (sec == null || !isFinite(sec)) return "—";
+    sec = Math.round(sec);
+    if (sec < 60) return sec + " dtk";
+    const m = Math.round(sec / 60);
+    if (m < 60) return m + " mnt";
+    const h = Math.floor(m / 60);
+    const rm = m % 60;
+    return h + " jam " + rm + " mnt";
+  }
+
+  function ringToLatLngs(ring) {
+    const pts = [];
+    for (let i = 0; i < ring.length; i++) {
+      const c = ring[i];
+      if (
+        i === ring.length - 1 &&
+        ring.length > 1 &&
+        c[0] === ring[0][0] &&
+        c[1] === ring[0][1]
+      ) {
+        break;
+      }
+      pts.push({ lat: c[1], lng: c[0] });
+    }
+    return pts;
+  }
+
+  /** Nearest point on polygon ring to origin (for destination pin) */
+  function nearestPointOnRing(origin, ringPts) {
+    if (!ringPts.length) return null;
+    let best = ringPts[0];
+    let bestD = Infinity;
+    ringPts.forEach((p) => {
+      const d = haversine(origin, p);
+      if (d < bestD) {
+        bestD = d;
+        best = p;
+      }
+    });
+    // also consider centroid if closer (inside parcel approach)
+    const c = centroid(ringPts);
+    if (c) {
+      const dC = haversine(origin, c);
+      // prefer edge if user is outside; centroid ok if roughly closer / inside-ish
+      if (dC + 8 < bestD) return c;
+    }
+    return best;
+  }
+
+  function getUserLatLng() {
+    if (!state.lastPosition) return null;
+    return {
+      lat: state.lastPosition.coords.latitude,
+      lng: state.lastPosition.coords.longitude,
+    };
+  }
+
+  function ensureUserPosition() {
+    return new Promise((resolve, reject) => {
+      const cur = getUserLatLng();
+      if (cur) {
+        resolve(cur);
+        return;
+      }
+      if (!navigator.geolocation) {
+        reject(new Error("GPS tidak didukung"));
+        return;
+      }
+      setStatus("Mencari lokasi untuk rute…");
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          state.lastPosition = pos;
+          showUserPosition(pos);
+          resolve({
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+          });
+        },
+        () => reject(new Error("Lokasi tidak tersedia")),
+        geoOptions()
+      );
+    });
+  }
+
+  function updateRouteBar() {
+    if (!els.routeBar) return;
+    if (!routeState.active) {
+      els.routeBar.hidden = true;
+      return;
+    }
+    els.routeBar.hidden = false;
+    els.routeDestName.textContent = routeState.name || "Tujuan lahan";
+    if (routeState.loading) {
+      els.routeMeta.textContent = "Menghitung rute…";
+    } else if (routeState.distance_m != null) {
+      const via =
+        routeState.provider === "osrm"
+          ? routeState.mode === "walking"
+            ? "jalan kaki"
+            : "kendaraan"
+          : "garis lurus";
+      els.routeMeta.textContent =
+        formatKm(routeState.distance_m) +
+        " · " +
+        formatDuration(routeState.duration_s) +
+        " · " +
+        via;
+    } else {
+      els.routeMeta.textContent = "Rute siap";
+    }
+    if (els.btnRouteMode) {
+      els.btnRouteMode.textContent =
+        routeState.mode === "walking" ? "Kaki" : "Mobil";
+    }
+  }
+
+  function clearRoute() {
+    if (routeAbort) {
+      try {
+        routeAbort.abort();
+      } catch (_) {}
+      routeAbort = null;
+    }
+    routeLayer.clearLayers();
+    routeLine = null;
+    destMarker = null;
+    routeState = {
+      active: false,
+      loading: false,
+      name: "",
+      dest: null,
+      mode: routeState.mode || "driving",
+      distance_m: null,
+      duration_s: null,
+      provider: null,
+    };
+    updateRouteBar();
+  }
+
+  function showDestinationMarker(dest, name) {
+    if (destMarker) {
+      destMarker.setLatLng([dest.lat, dest.lng]);
+    } else {
+      destMarker = L.marker([dest.lat, dest.lng], {
+        icon: L.divIcon({
+          className: "dest-marker",
+          iconSize: [22, 22],
+          iconAnchor: [11, 22],
+        }),
+        zIndexOffset: 900,
+        title: name || "Tujuan",
+      }).addTo(routeLayer);
+    }
+    destMarker.bindTooltip(name || "Tujuan", {
+      permanent: false,
+      direction: "top",
+    });
+  }
+
+  function drawRouteLatLngs(latlngs, style) {
+    if (routeLine) {
+      routeLayer.removeLayer(routeLine);
+      routeLine = null;
+    }
+    routeLine = L.polyline(latlngs, {
+      color: (style && style.color) || "#3b82f6",
+      weight: 5,
+      opacity: 0.9,
+      lineJoin: "round",
+      lineCap: "round",
+      dashArray: style && style.dash ? "8 10" : null,
+    }).addTo(routeLayer);
+  }
+
+  async function fetchOsrmRoute(from, to, mode) {
+    const profile = mode === "walking" ? "foot" : "driving";
+    // Public OSRM demo — fine for MVP; production should self-host / paid router
+    const url =
+      "https://router.project-osrm.org/route/v1/" +
+      profile +
+      "/" +
+      from.lng +
+      "," +
+      from.lat +
+      ";" +
+      to.lng +
+      "," +
+      to.lat +
+      "?overview=full&geometries=geojson&steps=false";
+
+    if (routeAbort) {
+      try {
+        routeAbort.abort();
+      } catch (_) {}
+    }
+    routeAbort = new AbortController();
+    const timer = setTimeout(() => routeAbort.abort(), 15000);
+    try {
+      const res = await fetch(url, { signal: routeAbort.signal });
+      if (!res.ok) throw new Error("OSRM HTTP " + res.status);
+      const data = await res.json();
+      if (data.code !== "Ok" || !data.routes || !data.routes[0]) {
+        throw new Error(data.message || "Tidak ada rute");
+      }
+      const r = data.routes[0];
+      const coords = (r.geometry.coordinates || []).map((c) => [c[1], c[0]]);
+      return {
+        latlngs: coords,
+        distance_m: r.distance,
+        duration_s: r.duration,
+        provider: "osrm",
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function straightRoute(from, to) {
+    const d = haversine(from, to);
+    // rough walking 5 km/h, driving 30 km/h rural
+    const speed =
+      routeState.mode === "walking" ? 5000 / 3600 : 30000 / 3600; // m/s
+    return {
+      latlngs: [
+        [from.lat, from.lng],
+        [to.lat, to.lng],
+      ],
+      distance_m: d,
+      duration_s: d / speed,
+      provider: "straight",
+    };
+  }
+
+  async function computeAndDrawRoute() {
+    if (!routeState.dest) return;
+    const from = await ensureUserPosition();
+    const to = routeState.dest;
+    routeState.loading = true;
+    updateRouteBar();
+    setStatus("Menghitung rute…");
+
+    let result;
+    try {
+      result = await fetchOsrmRoute(from, to, routeState.mode);
+    } catch (e) {
+      console.warn("OSRM failed, straight line", e);
+      result = straightRoute(from, to);
+      toast(
+        "Rute jalan tidak tersedia — menampilkan jarak garis lurus",
+        true
+      );
+    }
+
+    routeState.distance_m = result.distance_m;
+    routeState.duration_s = result.duration_s;
+    routeState.provider = result.provider;
+    routeState.loading = false;
+
+    drawRouteLatLngs(result.latlngs, {
+      dash: result.provider === "straight",
+      color: result.provider === "straight" ? "#f59e0b" : "#3b82f6",
+    });
+    showDestinationMarker(to, routeState.name);
+
+    try {
+      const b = L.latLngBounds(
+        result.latlngs.map((ll) => L.latLng(ll[0], ll[1]))
+      );
+      b.extend([from.lat, from.lng]);
+      b.extend([to.lat, to.lng]);
+      map.fitBounds(b, { padding: [60, 60], maxZoom: 17 });
+    } catch (_) {}
+
+    updateRouteBar();
+    setStatus(
+      "Rute · " +
+        formatKm(result.distance_m) +
+        " · " +
+        (routeState.name || "tujuan")
+    );
+  }
+
+  async function setAsDestination(opts) {
+    // opts: { name, latlngs: [[lat,lng],...] or ring [[lng,lat],...] , dest?: {lat,lng} }
+    try {
+      const from = await ensureUserPosition();
+      let dest = opts.dest;
+      if (!dest && opts.ringPts && opts.ringPts.length) {
+        dest = nearestPointOnRing(from, opts.ringPts);
+      }
+      if (!dest && opts.latlngs && opts.latlngs.length) {
+        const ringPts = opts.latlngs.map((ll) =>
+          Array.isArray(ll)
+            ? { lat: ll[0], lng: ll[1] }
+            : { lat: ll.lat, lng: ll.lng }
+        );
+        dest = nearestPointOnRing(from, ringPts);
+      }
+      if (!dest) {
+        toast("Titik tujuan tidak valid", true);
+        return;
+      }
+
+      routeState.active = true;
+      routeState.name = opts.name || "Tujuan lahan";
+      routeState.dest = { lat: dest.lat, lng: dest.lng };
+      routeState.distance_m = null;
+      routeState.duration_s = null;
+      routeState.provider = null;
+      map.closePopup();
+      showDestinationMarker(routeState.dest, routeState.name);
+      updateRouteBar();
+      toast("Tujuan diset: " + routeState.name);
+      await computeAndDrawRoute();
+    } catch (e) {
+      toast(e.message || "Gagal set tujuan", true);
+    }
+  }
+
+  function openInGoogleMaps() {
+    if (!routeState.dest) return;
+    const d = routeState.dest;
+    const travel = routeState.mode === "walking" ? "walking" : "driving";
+    let url =
+      "https://www.google.com/maps/dir/?api=1&destination=" +
+      encodeURIComponent(d.lat + "," + d.lng) +
+      "&travelmode=" +
+      travel;
+    const from = getUserLatLng();
+    if (from) {
+      url +=
+        "&origin=" + encodeURIComponent(from.lat + "," + from.lng);
+    }
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  function destinationFromPolygonLatLngs(latlngs, name) {
+    const ringPts = latlngs.map((ll) =>
+      Array.isArray(ll)
+        ? { lat: ll[0], lng: ll[1] }
+        : { lat: ll.lat, lng: ll.lng }
+    );
+    setAsDestination({ name: name, ringPts: ringPts });
+  }
+
   function updateBsreLabel() {
     const el = $("bsreLoadLabel");
     if (!el) return;
@@ -1193,6 +1583,7 @@
           renderer: canvasRenderer,
           smoothFactor: 1.5,
         });
+        const destId = "dest_ds_" + idx + "_" + Math.random().toString(36).slice(2, 7);
         poly.bindPopup(
           `<div class="ds-popup">` +
             `<strong>${escapeHtml(String(name))}</strong><br>` +
@@ -1200,12 +1591,22 @@
             (props.id && props.id !== name
               ? `<br>ID: ${escapeHtml(String(props.id))}`
               : "") +
-            `<br><button type="button" class="popup-edit-btn" data-ds-idx="${idx}">Edit di GeoPatok</button>` +
-            `</div>`
+            `<div class="popup-actions">` +
+            `<button type="button" class="popup-dest-btn" data-dest-id="${destId}">Set as destination</button>` +
+            `<button type="button" class="popup-edit-btn" data-ds-idx="${idx}" data-dest-id="${destId}">Edit di GeoPatok</button>` +
+            `</div></div>`
         );
         poly.on("popupopen", () => {
+          const destBtn = document.querySelector(
+            `.popup-dest-btn[data-dest-id="${destId}"]`
+          );
+          if (destBtn) {
+            destBtn.onclick = () => {
+              destinationFromPolygonLatLngs(latlngs, String(name));
+            };
+          }
           const btn = document.querySelector(
-            `.popup-edit-btn[data-ds-idx="${idx}"]`
+            `.popup-edit-btn[data-dest-id="${destId}"]`
           );
           if (btn) {
             btn.onclick = () => {
@@ -1241,8 +1642,9 @@
     // Toggle off if already loaded
     if (bsreLoaded) {
       clearDatasetLayer();
+      // keep active route if any
       toast("Data BSRE dilepas dari peta");
-      setStatus("Siap memetakan");
+      setStatus(routeState.active ? "Rute aktif" : "Siap memetakan");
       return;
     }
     if (bsreLoading) return;
@@ -1632,6 +2034,34 @@
   // ---------- Event wiring ----------
   function bindEvents() {
     els.btnLocate.addEventListener("click", () => locateOnce(true));
+    if (els.btnClearRoute) {
+      els.btnClearRoute.addEventListener("click", () => {
+        clearRoute();
+        toast("Rute dihapus");
+        setStatus("Siap memetakan");
+      });
+    }
+    if (els.btnRouteMode) {
+      els.btnRouteMode.addEventListener("click", async () => {
+        if (!routeState.active || !routeState.dest) return;
+        routeState.mode =
+          routeState.mode === "driving" ? "walking" : "driving";
+        updateRouteBar();
+        toast(
+          routeState.mode === "walking"
+            ? "Mode rute: jalan kaki"
+            : "Mode rute: kendaraan"
+        );
+        try {
+          await computeAndDrawRoute();
+        } catch (e) {
+          toast("Gagal hitung ulang rute", true);
+        }
+      });
+    }
+    if (els.btnOpenMaps) {
+      els.btnOpenMaps.addEventListener("click", openInGoogleMaps);
+    }
     els.btnAddPoint.addEventListener("click", () => {
       if (state.walkMode) {
         stopWalkMode();
