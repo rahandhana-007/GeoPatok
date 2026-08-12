@@ -60,9 +60,12 @@
     metaSheet: $("metaSheet"),
     parcelsSheet: $("parcelsSheet"),
     exportSheet: $("exportSheet"),
+    importSheet: $("importSheet"),
     helpSheet: $("helpSheet"),
     toast: $("toast"),
     fileImport: $("fileImport"),
+    dropZone: $("dropZone"),
+    importResult: $("importResult"),
     accuracyThreshold: $("accuracyThreshold"),
     walkInterval: $("walkInterval"),
     highAccuracy: $("highAccuracy"),
@@ -1028,80 +1031,331 @@
     }
   }
 
+  function getImportMode() {
+    const el = document.querySelector('input[name="importMode"]:checked');
+    return (el && el.value) || "append";
+  }
+
+  function showImportResult(html, isError) {
+    if (!els.importResult) return;
+    els.importResult.hidden = false;
+    els.importResult.classList.toggle("error", !!isError);
+    els.importResult.innerHTML = html;
+  }
+
+  function openImportSheet() {
+    if (els.importResult) {
+      els.importResult.hidden = true;
+      els.importResult.innerHTML = "";
+    }
+    openSheet("importSheet");
+  }
+
+  function enrichFeature(f) {
+    if (!f.properties) f.properties = {};
+    if (!f.properties.id) f.properties.id = uid();
+    if (!f.properties.name) f.properties.name = "Impor lahan";
+    if (f.geometry && f.geometry.type === "Polygon") {
+      const ring = f.geometry.coordinates[0] || [];
+      // drop closing duplicate for area calc
+      const pts = [];
+      for (let i = 0; i < ring.length; i++) {
+        const c = ring[i];
+        if (
+          i === ring.length - 1 &&
+          ring.length > 1 &&
+          c[0] === ring[0][0] &&
+          c[1] === ring[0][1]
+        ) {
+          break;
+        }
+        pts.push({ lat: c[1], lng: c[0] });
+      }
+      if (pts.length >= 3) {
+        const area = polygonArea(pts);
+        f.properties.area_m2 = Math.round(area * 100) / 100;
+        f.properties.area_ha = roundHa(area);
+        f.properties.area_unit = "Ha";
+        f.properties.perimeter_m =
+          Math.round(perimeter(pts, true) * 100) / 100;
+        f.properties.vertex_count = pts.length;
+      }
+    }
+    return f;
+  }
+
+  function fitFeatures(features) {
+    const all = [];
+    features.forEach((p) => {
+      const g = p.geometry;
+      if (!g) return;
+      if (g.type === "Polygon") {
+        (g.coordinates[0] || []).forEach((c) => all.push([c[1], c[0]]));
+      }
+    });
+    if (all.length) {
+      try {
+        map.fitBounds(all, { padding: [48, 48], maxZoom: 19 });
+      } catch (_) {}
+    }
+  }
+
+  /** Load first polygon into the active drawing editor */
+  function loadFeatureAsActive(feature) {
+    if (state.walkMode) stopWalkMode();
+    const ring = feature.geometry.coordinates[0] || [];
+    const pts = [];
+    for (let i = 0; i < ring.length; i++) {
+      const c = ring[i];
+      if (
+        i === ring.length - 1 &&
+        ring.length > 1 &&
+        c[0] === ring[0][0] &&
+        c[1] === ring[0][1]
+      ) {
+        break;
+      }
+      pts.push({
+        lat: c[1],
+        lng: c[0],
+        accuracy: null,
+        altitude: null,
+        timestamp: Date.now(),
+        source: "import",
+      });
+    }
+    if (pts.length < 3) {
+      toast("Poligon di file kurang dari 3 titik", true);
+      return false;
+    }
+    state.points = pts;
+    state.closed = true;
+    const props = feature.properties || {};
+    state.meta = {
+      name: props.name || "",
+      owner: props.owner || "",
+      type: props.land_type || props.type || "lainnya",
+      notes: props.notes || "",
+    };
+    // Ensure land type exists in select
+    if (els.metaType) {
+      const opt = Array.from(els.metaType.options).some(
+        (o) => o.value === state.meta.type
+      );
+      if (!opt) state.meta.type = "lainnya";
+    }
+    redraw();
+    fitFeatures([feature]);
+    const area = polygonArea(pts);
+    setStatus("Dimuat: " + (state.meta.name || "poligon") + " · " + formatHa(area));
+    return true;
+  }
+
   function importGeoJSONFile(file) {
+    if (!file) return;
+    const name = (file.name || "").toLowerCase();
+    if (name && !name.endsWith(".geojson") && !name.endsWith(".json")) {
+      toast("Pilih file .geojson atau .json", true);
+      showImportResult("Format tidak didukung. Gunakan <strong>.geojson</strong> atau <strong>.json</strong>.", true);
+      return;
+    }
+
+    const mode = getImportMode();
     const reader = new FileReader();
+    reader.onerror = () => {
+      toast("Gagal membaca file", true);
+      showImportResult("Gagal membaca file dari perangkat.", true);
+    };
     reader.onload = () => {
       try {
-        const data = JSON.parse(reader.result);
-        const features = normalizeImported(data);
-        if (!features.length) {
-          toast("Tidak ada poligon di file", true);
+        const text = String(reader.result || "").trim();
+        if (!text) {
+          toast("File kosong", true);
+          showImportResult("File kosong.", true);
           return;
         }
-        features.forEach((f) => {
-          if (!f.properties) f.properties = {};
-          if (!f.properties.id) f.properties.id = uid();
-          if (!f.properties.name) f.properties.name = "Impor lahan";
-          // recompute area if missing
-          if (f.geometry && f.geometry.type === "Polygon") {
-            const ring = f.geometry.coordinates[0] || [];
-            const pts = ring.slice(0, -1).map((c) => ({ lat: c[1], lng: c[0] }));
-            if (pts.length >= 3) {
-              f.properties.area_m2 =
-                Math.round(polygonArea(pts) * 100) / 100;
-              f.properties.area_ha = roundHa(f.properties.area_m2);
-              f.properties.area_unit = "Ha";
-              f.properties.perimeter_m =
-                Math.round(perimeter(pts, true) * 100) / 100;
-              f.properties.vertex_count = pts.length;
-            }
+        const data = JSON.parse(text);
+        const features = normalizeImported(data).map(enrichFeature);
+        if (!features.length) {
+          toast("Tidak ada poligon di file", true);
+          showImportResult(
+            "Tidak ditemukan geometri <strong>Polygon</strong> di file ini.<br>Pastikan isinya Feature / FeatureCollection GeoJSON.",
+            true
+          );
+          return;
+        }
+
+        if (mode === "active") {
+          const ok = loadFeatureAsActive(features[0]);
+          if (!ok) return;
+          const extra =
+            features.length > 1
+              ? `<br><small>${features.length - 1} poligon lain tidak dimuat (mode gambar aktif hanya 1).</small>`
+              : "";
+          showImportResult(
+            `<strong>Berhasil dimuat sebagai gambar aktif</strong><br>` +
+              escapeHtml(features[0].properties.name || "Poligon") +
+              ` · ${features[0].properties.vertex_count || "?"} titik · ` +
+              escapeHtml(formatHa(features[0].properties.area_m2 || 0)) +
+              extra
+          );
+          toast("GeoJSON dibuka sebagai gambar aktif");
+          // keep sheet open briefly so user sees result, then close
+          setTimeout(() => closeSheet("importSheet"), 900);
+          return;
+        }
+
+        if (mode === "replace") {
+          if (
+            state.parcels.length &&
+            !confirm(
+              `Ganti ${state.parcels.length} lahan tersimpan dengan ${features.length} poligon dari file?`
+            )
+          ) {
+            return;
           }
-          state.parcels.push(f);
-        });
+          state.parcels = features.slice();
+        } else {
+          // append
+          features.forEach((f) => state.parcels.push(f));
+        }
+
         saveParcels();
         renderParcelsOnMap();
-        // fit bounds
-        const all = [];
-        state.parcels.forEach((p) => {
-          (p.geometry.coordinates[0] || []).forEach((c) => all.push([c[1], c[0]]));
-        });
-        if (all.length) map.fitBounds(all, { padding: [40, 40] });
-        toast(features.length + " lahan diimpor");
+        fitFeatures(features);
+
+        const totalHa = features.reduce(
+          (s, f) => s + (Number(f.properties.area_ha) || 0),
+          0
+        );
+        const modeLabel =
+          mode === "replace" ? "Diganti dengan" : "Ditambahkan";
+        showImportResult(
+          `<strong>${modeLabel} ${features.length} poligon</strong><br>` +
+            `File: ${escapeHtml(file.name || "geojson")}<br>` +
+            `Total luas ≈ <strong>${escapeHtml(
+              formatHa(totalHa * 10000)
+            )}</strong><br>` +
+            `Daftar sekarang: ${state.parcels.length} lahan`
+        );
+        toast(`${features.length} lahan dimuat dari GeoJSON`);
+        updateParcelCount();
       } catch (e) {
+        console.error(e);
         toast("File GeoJSON tidak valid", true);
+        showImportResult(
+          "Gagal mem-parsing JSON.<br>Pastikan file adalah GeoJSON yang valid.",
+          true
+        );
       }
     };
-    reader.readAsText(file);
+    reader.readAsText(file, "UTF-8");
   }
 
   function normalizeImported(data) {
     const out = [];
     if (!data) return out;
+
+    const pushPoly = (featureLike) => {
+      if (!featureLike) return;
+      const g = featureLike.geometry || featureLike;
+      const props = featureLike.properties || {};
+      if (!g || !g.type) return;
+      if (g.type === "Polygon" && Array.isArray(g.coordinates)) {
+        out.push({
+          type: "Feature",
+          properties: { ...props },
+          geometry: { type: "Polygon", coordinates: g.coordinates },
+        });
+      } else if (g.type === "MultiPolygon" && Array.isArray(g.coordinates)) {
+        g.coordinates.forEach((poly, i) => {
+          out.push({
+            type: "Feature",
+            properties: {
+              ...props,
+              name:
+                props.name
+                  ? props.name + " #" + (i + 1)
+                  : "Multi " + (i + 1),
+            },
+            geometry: { type: "Polygon", coordinates: poly },
+          });
+        });
+      }
+    };
+
     if (data.type === "FeatureCollection" && Array.isArray(data.features)) {
       data.features.forEach((f) => {
-        if (f && f.geometry && f.geometry.type === "Polygon") out.push(f);
-        else if (f && f.geometry && f.geometry.type === "MultiPolygon") {
-          f.geometry.coordinates.forEach((poly, i) => {
-            out.push({
-              type: "Feature",
-              properties: {
-                ...(f.properties || {}),
-                name:
-                  (f.properties && f.properties.name
-                    ? f.properties.name + " #" + (i + 1)
-                    : "Multi " + (i + 1)),
-              },
-              geometry: { type: "Polygon", coordinates: poly },
-            });
+        if (!f) return;
+        if (f.geometry && f.geometry.type === "Polygon") {
+          out.push({
+            type: "Feature",
+            properties: { ...(f.properties || {}) },
+            geometry: f.geometry,
           });
+        } else if (f.geometry && f.geometry.type === "MultiPolygon") {
+          pushPoly(f);
+        } else if (f.type === "Polygon") {
+          pushPoly({ properties: f.properties || {}, geometry: f });
         }
       });
-    } else if (data.type === "Feature" && data.geometry) {
-      if (data.geometry.type === "Polygon") out.push(data);
-    } else if (data.type === "Polygon") {
-      out.push({ type: "Feature", properties: {}, geometry: data });
+    } else if (data.type === "Feature") {
+      pushPoly(data);
+    } else if (data.type === "Polygon" || data.type === "MultiPolygon") {
+      pushPoly({ properties: {}, geometry: data });
+    } else if (Array.isArray(data.features)) {
+      // lenient: collection without type
+      data.features.forEach((f) => pushPoly(f));
     }
     return out;
+  }
+
+  function bindDropZone() {
+    const zone = els.dropZone;
+    if (!zone) return;
+
+    const pick = () => els.fileImport && els.fileImport.click();
+    zone.addEventListener("click", pick);
+    zone.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        pick();
+      }
+    });
+
+    ["dragenter", "dragover"].forEach((ev) => {
+      zone.addEventListener(ev, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        zone.classList.add("dragover");
+      });
+    });
+    ["dragleave", "drop"].forEach((ev) => {
+      zone.addEventListener(ev, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (ev === "dragleave") zone.classList.remove("dragover");
+      });
+    });
+    zone.addEventListener("drop", (e) => {
+      zone.classList.remove("dragover");
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (files && files[0]) importGeoJSONFile(files[0]);
+    });
+
+    // Also allow drop on whole import sheet panel
+    const sheet = els.importSheet;
+    if (sheet) {
+      sheet.addEventListener("dragover", (e) => {
+        e.preventDefault();
+      });
+      sheet.addEventListener("drop", (e) => {
+        if (e.target.closest && e.target.closest("#dropZone")) return;
+        e.preventDefault();
+        const files = e.dataTransfer && e.dataTransfer.files;
+        if (files && files[0]) importGeoJSONFile(files[0]);
+      });
+    }
   }
 
   // ---------- Parcels list UI ----------
@@ -1149,6 +1403,17 @@
           .slice(0, 40);
         downloadGeoJSON(featureCollection([p]), `geopatok_${name}.geojson`);
       };
+      const btnEdit = document.createElement("button");
+      btnEdit.type = "button";
+      btnEdit.textContent = "Edit";
+      btnEdit.onclick = () => {
+        if (state.points.length && !state.closed) {
+          if (!confirm("Ganti gambar aktif yang belum selesai dengan lahan ini?")) return;
+        }
+        loadFeatureAsActive(p);
+        closeAllSheets();
+        toast("Lahan dibuka untuk diedit");
+      };
       const btnDel = document.createElement("button");
       btnDel.type = "button";
       btnDel.className = "danger";
@@ -1161,7 +1426,7 @@
         renderParcelsList();
         toast("Lahan dihapus");
       };
-      actions.append(btnFocus, btnDl, btnDel);
+      actions.append(btnFocus, btnEdit, btnDl, btnDel);
       item.append(left, actions);
       list.appendChild(item);
     });
@@ -1231,13 +1496,21 @@
 
     $("btnImport").addEventListener("click", () => {
       closeSheet("moreSheet");
-      els.fileImport.click();
+      openImportSheet();
     });
+    const btnImportFromList = $("btnImportFromList");
+    if (btnImportFromList) {
+      btnImportFromList.addEventListener("click", () => {
+        closeSheet("parcelsSheet");
+        openImportSheet();
+      });
+    }
     els.fileImport.addEventListener("change", () => {
       const f = els.fileImport.files && els.fileImport.files[0];
       if (f) importGeoJSONFile(f);
       els.fileImport.value = "";
     });
+    bindDropZone();
 
     $("btnClear").addEventListener("click", () => {
       closeSheet("moreSheet");

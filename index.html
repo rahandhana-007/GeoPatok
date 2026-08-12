@@ -130,11 +130,11 @@
               <small>Ekspor lahan aktif / semua lahan</small>
             </div>
           </button>
-          <button type="button" id="btnImport" class="menu-item">
-            <span class="menu-icon">⬆</span>
+          <button type="button" id="btnImport" class="menu-item accent">
+            <span class="menu-icon">📂</span>
             <div>
-              <strong>Impor GeoJSON</strong>
-              <small>Muat file GeoJSON yang sudah ada</small>
+              <strong>Muat GeoJSON</strong>
+              <small>Buka file .geojson / .json ke peta</small>
             </div>
           </button>
           <button type="button" id="btnClear" class="menu-item danger">
@@ -226,7 +226,8 @@
         <div class="sheet-handle"></div>
         <h2>Daftar lahan</h2>
         <div id="parcelsList" class="parcels-list"></div>
-        <button type="button" id="btnExportAll" class="btn-block primary" style="margin-top:12px">Unduh semua (GeoJSON)</button>
+        <button type="button" id="btnImportFromList" class="btn-block outline" style="margin-top:12px">Muat GeoJSON…</button>
+        <button type="button" id="btnExportAll" class="btn-block primary" style="margin-top:8px">Unduh semua (GeoJSON)</button>
         <button type="button" id="btnClearAll" class="btn-block danger-outline" style="margin-top:8px">Hapus semua lahan</button>
       </div>
     </div>
@@ -245,6 +246,48 @@
       </div>
     </div>
 
+    <!-- Import / Load GeoJSON sheet -->
+    <div id="importSheet" class="sheet" hidden>
+      <div class="sheet-backdrop" data-close="importSheet"></div>
+      <div class="sheet-panel" role="dialog" aria-label="Muat GeoJSON">
+        <div class="sheet-handle"></div>
+        <h2>Muat GeoJSON</h2>
+        <p class="hint">Buka file <strong>.geojson</strong> atau <strong>.json</strong> dari perangkat. Poligon akan ditampilkan di peta.</p>
+
+        <div id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="Pilih atau lepas file GeoJSON">
+          <div class="drop-zone-icon">📂</div>
+          <strong>Ketuk untuk pilih file</strong>
+          <span>atau seret & lepas file ke sini</span>
+          <span class="drop-zone-formats">.geojson · .json</span>
+        </div>
+
+        <h3 class="section-title">Mode muat</h3>
+        <label class="radio-item">
+          <input type="radio" name="importMode" value="append" checked />
+          <div>
+            <strong>Tambah ke daftar lahan</strong>
+            <small class="radio-desc">Poligon masuk daftar tersimpan (tidak menimpa yang ada)</small>
+          </div>
+        </label>
+        <label class="radio-item" style="margin-top:6px">
+          <input type="radio" name="importMode" value="replace" />
+          <div>
+            <strong>Ganti semua lahan tersimpan</strong>
+            <small class="radio-desc">Hapus daftar lama, isi dengan file ini</small>
+          </div>
+        </label>
+        <label class="radio-item" style="margin-top:6px">
+          <input type="radio" name="importMode" value="active" />
+          <div>
+            <strong>Buka sebagai gambar aktif</strong>
+            <small class="radio-desc">Poligon pertama jadi editable (bisa undo, tutup, ekspor)</small>
+          </div>
+        </label>
+
+        <div id="importResult" class="import-result" hidden></div>
+      </div>
+    </div>
+
     <!-- Help sheet -->
     <div id="helpSheet" class="sheet" hidden>
       <div class="sheet-backdrop" data-close="helpSheet"></div>
@@ -258,6 +301,7 @@
           <li>Atau aktifkan <strong>Mode jalan</strong> lalu kelilingi batas lahan — app merekam banyak titik.</li>
           <li>Tekan <strong>Tutup</strong>: jika titik &gt; 8, app menyederhanakan ke <strong>8 titik paling mewakili</strong> lalu membentuk poligon.</li>
           <li>Isi info lahan, simpan ke daftar, lalu <strong>Unduh GeoJSON</strong>.</li>
+          <li>Pakai <strong>Muat GeoJSON</strong> untuk membuka kembali file yang sudah diunduh atau dari QGIS/app lain.</li>
         </ol>
         <h3 class="section-title">Tips akurasi</h3>
         <ul class="help-list bullets">
