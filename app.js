@@ -107,12 +107,26 @@
 
   basemaps.osm.addTo(map);
 
+  // Canvas renderer is much faster for 1000+ polygons on mobile
+  const canvasRenderer = L.canvas({ padding: 0.5 });
   const drawLayer = L.layerGroup().addTo(map);
   const parcelsLayer = L.layerGroup().addTo(map);
+  const datasetLayer = L.layerGroup().addTo(map); // external / BSRE datasets
   let userMarker = null;
   let accuracyCircle = null;
   let polyline = null;
   let polygon = null;
+  let bsreLoaded = false;
+  let bsreLoading = false;
+  let bsreFeatureCount = 0;
+
+  /** Bundled dataset from Google Drive share */
+  const BSRE_DATASET = {
+    id: "polsh_bsre_1119",
+    title: "POLSH BSRE 1119",
+    url: "./data/POLSH_BSRE_1119.geojson",
+    sourceLabel: "Data BSRE (bundled)",
+  };
 
   // ---------- Utilities ----------
   function toast(msg, isError = false) {
@@ -1053,11 +1067,39 @@
 
   function enrichFeature(f) {
     if (!f.properties) f.properties = {};
-    if (!f.properties.id) f.properties.id = uid();
-    if (!f.properties.name) f.properties.name = "Impor lahan";
+    const p = f.properties;
+    // Normalize common field aliases (BSRE / shapefile exports)
+    if (!p.id) p.id = uid();
+    if (!p.name) {
+      p.name =
+        p.NAME ||
+        p.Name ||
+        p.nama ||
+        p.ID ||
+        p.id ||
+        p.FID ||
+        "Impor lahan";
+    }
+    // HA property often already in hectares
+    if (p.area_ha == null && p.HA != null && p.HA !== "") {
+      const ha = Number(p.HA);
+      if (isFinite(ha)) {
+        p.area_ha = ha;
+        p.area_m2 = Math.round(ha * 10000 * 100) / 100;
+        p.area_unit = "Ha";
+      }
+    }
+    if (p.area_ha == null && p.ha != null && p.ha !== "") {
+      const ha = Number(p.ha);
+      if (isFinite(ha)) {
+        p.area_ha = ha;
+        p.area_m2 = Math.round(ha * 10000 * 100) / 100;
+        p.area_unit = "Ha";
+      }
+    }
+
     if (f.geometry && f.geometry.type === "Polygon") {
       const ring = f.geometry.coordinates[0] || [];
-      // drop closing duplicate for area calc
       const pts = [];
       for (let i = 0; i < ring.length; i++) {
         const c = ring[i];
@@ -1072,16 +1114,171 @@
         pts.push({ lat: c[1], lng: c[0] });
       }
       if (pts.length >= 3) {
-        const area = polygonArea(pts);
-        f.properties.area_m2 = Math.round(area * 100) / 100;
-        f.properties.area_ha = roundHa(area);
-        f.properties.area_unit = "Ha";
-        f.properties.perimeter_m =
-          Math.round(perimeter(pts, true) * 100) / 100;
-        f.properties.vertex_count = pts.length;
+        if (p.area_m2 == null || p.area_ha == null) {
+          const area = polygonArea(pts);
+          p.area_m2 = Math.round(area * 100) / 100;
+          p.area_ha = roundHa(area);
+          p.area_unit = "Ha";
+        }
+        p.perimeter_m = Math.round(perimeter(pts, true) * 100) / 100;
+        p.vertex_count = pts.length;
       }
     }
     return f;
+  }
+
+  function clearDatasetLayer() {
+    datasetLayer.clearLayers();
+    bsreLoaded = false;
+    bsreFeatureCount = 0;
+    updateBsreLabel();
+  }
+
+  function updateBsreLabel() {
+    const el = $("bsreLoadLabel");
+    if (!el) return;
+    if (bsreLoading) el.textContent = "Memuat data BSRE…";
+    else if (bsreLoaded)
+      el.textContent = `Aktif · ${bsreFeatureCount.toLocaleString("id-ID")} bidang — ketuk lagi untuk lepas`;
+    else el.textContent = "POLSH BSRE 1119 — 1.212 bidang lahan";
+  }
+
+  /**
+   * Render a large FeatureCollection on the dedicated dataset layer.
+   * Uses canvas + light styling; labels only when zoomed in & few on screen.
+   */
+  function renderDatasetFeatures(features, opts) {
+    opts = opts || {};
+    datasetLayer.clearLayers();
+    const boundsPts = [];
+    const color = opts.color || "#f59e0b";
+    const maxLabels = opts.maxLabels != null ? opts.maxLabels : 0; // 0 = no permanent labels
+
+    features.forEach((f, idx) => {
+      const g = f.geometry;
+      if (!g) return;
+      const props = f.properties || {};
+      const name = props.name || props.id || "Bidang";
+      const ha =
+        props.area_ha != null
+          ? props.area_ha
+          : props.HA != null
+            ? Number(props.HA)
+            : null;
+      const haText =
+        ha != null && isFinite(ha)
+          ? formatHa(Number(ha) * 10000)
+          : "—";
+
+      const rings =
+        g.type === "Polygon"
+          ? [g.coordinates]
+          : g.type === "MultiPolygon"
+            ? g.coordinates
+            : [];
+
+      rings.forEach((polyCoords) => {
+        const latlngs = (polyCoords[0] || []).map((c) => {
+          boundsPts.push([c[1], c[0]]);
+          return [c[1], c[0]];
+        });
+        if (latlngs.length < 3) return;
+
+        const poly = L.polygon(latlngs, {
+          color: color,
+          weight: 1,
+          opacity: 0.85,
+          fillColor: color,
+          fillOpacity: 0.14,
+          renderer: canvasRenderer,
+          smoothFactor: 1.5,
+        });
+        poly.bindPopup(
+          `<div class="ds-popup">` +
+            `<strong>${escapeHtml(String(name))}</strong><br>` +
+            `Luas: <strong>${escapeHtml(haText)}</strong>` +
+            (props.id && props.id !== name
+              ? `<br>ID: ${escapeHtml(String(props.id))}`
+              : "") +
+            `<br><button type="button" class="popup-edit-btn" data-ds-idx="${idx}">Edit di GeoPatok</button>` +
+            `</div>`
+        );
+        poly.on("popupopen", () => {
+          const btn = document.querySelector(
+            `.popup-edit-btn[data-ds-idx="${idx}"]`
+          );
+          if (btn) {
+            btn.onclick = () => {
+              // Convert this multipolygon piece / feature to active drawing
+              const asFeature = {
+                type: "Feature",
+                properties: { ...props, name: String(name) },
+                geometry: {
+                  type: "Polygon",
+                  coordinates: polyCoords,
+                },
+              };
+              enrichFeature(asFeature);
+              loadFeatureAsActive(asFeature);
+              map.closePopup();
+              toast("Bidang dibuka sebagai gambar aktif");
+            };
+          }
+        });
+        poly.addTo(datasetLayer);
+      });
+    });
+
+    if (boundsPts.length) {
+      try {
+        map.fitBounds(boundsPts, { padding: [30, 30], maxZoom: 14 });
+      } catch (_) {}
+    }
+    return features.length;
+  }
+
+  async function loadBsreDataset() {
+    // Toggle off if already loaded
+    if (bsreLoaded) {
+      clearDatasetLayer();
+      toast("Data BSRE dilepas dari peta");
+      setStatus("Siap memetakan");
+      return;
+    }
+    if (bsreLoading) return;
+
+    bsreLoading = true;
+    updateBsreLabel();
+    setStatus("Memuat data BSRE…");
+    closeSheet("moreSheet");
+    toast("Memuat POLSH BSRE 1119…");
+
+    try {
+      const res = await fetch(BSRE_DATASET.url, { cache: "force-cache" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      const features = normalizeImported(data).map(enrichFeature);
+      if (!features.length) throw new Error("Tidak ada poligon");
+
+      bsreFeatureCount = renderDatasetFeatures(features, {
+        color: "#f59e0b",
+      });
+      bsreLoaded = true;
+      setStatus(
+        `BSRE · ${bsreFeatureCount.toLocaleString("id-ID")} bidang`
+      );
+      toast(
+        `Data BSRE dimuat: ${bsreFeatureCount.toLocaleString("id-ID")} bidang`
+      );
+    } catch (e) {
+      console.error(e);
+      bsreLoaded = false;
+      toast("Gagal memuat data BSRE", true);
+      setStatus("Gagal muat BSRE");
+    } finally {
+      bsreLoading = false;
+      updateBsreLabel();
+    }
   }
 
   function fitFeatures(features) {
@@ -1493,6 +1690,13 @@
     $("btnExportSaved").addEventListener("click", exportAll);
     $("btnExportAll").addEventListener("click", exportAll);
     $("btnCopyGeoJSON").addEventListener("click", copyActiveGeoJSON);
+
+    const btnLoadBsre = $("btnLoadBsre");
+    if (btnLoadBsre) {
+      btnLoadBsre.addEventListener("click", () => {
+        loadBsreDataset();
+      });
+    }
 
     $("btnImport").addEventListener("click", () => {
       closeSheet("moreSheet");

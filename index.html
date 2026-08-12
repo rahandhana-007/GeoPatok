@@ -130,11 +130,18 @@
               <small>Ekspor lahan aktif / semua lahan</small>
             </div>
           </button>
-          <button type="button" id="btnImport" class="menu-item accent">
+          <button type="button" id="btnLoadBsre" class="menu-item accent">
+            <span class="menu-icon">🗺</span>
+            <div>
+              <strong>Muat data BSRE</strong>
+              <small id="bsreLoadLabel">POLSH BSRE 1119 — 1.212 bidang lahan</small>
+            </div>
+          </button>
+          <button type="button" id="btnImport" class="menu-item">
             <span class="menu-icon">📂</span>
             <div>
               <strong>Muat GeoJSON</strong>
-              <small>Buka file .geojson / .json ke peta</small>
+              <small>Buka file .geojson / .json dari perangkat</small>
             </div>
           </button>
           <button type="button" id="btnClear" class="menu-item danger">
@@ -302,6 +309,7 @@
           <li>Tekan <strong>Tutup</strong>: jika titik &gt; 8, app menyederhanakan ke <strong>8 titik paling mewakili</strong> lalu membentuk poligon.</li>
           <li>Isi info lahan, simpan ke daftar, lalu <strong>Unduh GeoJSON</strong>.</li>
           <li>Pakai <strong>Muat GeoJSON</strong> untuk membuka kembali file yang sudah diunduh atau dari QGIS/app lain.</li>
+          <li><strong>Muat data BSRE</strong> menampilkan dataset POLSH BSRE 1119 (1.212 bidang). Ketuk bidang → Edit di GeoPatok.</li>
         </ol>
         <h3 class="section-title">Tips akurasi</h3>
         <ul class="help-list bullets">

@@ -642,6 +642,47 @@ body {
   color: var(--primary-2);
 }
 
+/* Dataset (BSRE) popup */
+.ds-popup {
+  font-size: 0.85rem;
+  line-height: 1.4;
+  min-width: 140px;
+}
+
+.popup-edit-btn {
+  margin-top: 8px;
+  width: 100%;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  background: linear-gradient(145deg, #14b8a6, #0f766e);
+  color: #042f2e;
+}
+
+.leaflet-popup-content-wrapper {
+  background: #111827;
+  color: #f3f4f6;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+}
+
+.leaflet-popup-tip {
+  background: #111827;
+}
+
+.leaflet-popup-content {
+  margin: 12px 14px;
+}
+
+.leaflet-container a.leaflet-popup-close-button {
+  color: #9ca3af;
+}
+
 .field {
   display: flex;
   flex-direction: column;
