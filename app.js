@@ -1,5 +1,5 @@
 /**
- * GeoPatok — Solusi pemetaan lahan Anda
+ * Geopatok V3 - By AR
  * Accurate smartphone land mapping → GeoJSON
  * All data stays local (localStorage). No backend required.
  */
@@ -9,7 +9,8 @@
   // ---------- Constants & state ----------
   const STORAGE_KEY = "geopatok_parcels_v1";
   const SETTINGS_KEY = "geopatok_settings_v1";
-  const APP_NAME = "GeoPatok";
+  const APP_NAME = "Geopatok V3 - By AR";
+  const APP_SHORT = "Geopatok V3";
   /** Saat Tutup: sederhanakan poligon ke N titik paling mewakili (jika lebih banyak) */
   const CLOSE_TARGET_POINTS = 8;
 
@@ -1593,7 +1594,7 @@
               : "") +
             `<div class="popup-actions">` +
             `<button type="button" class="popup-dest-btn" data-dest-id="${destId}">Set as destination</button>` +
-            `<button type="button" class="popup-edit-btn" data-ds-idx="${idx}" data-dest-id="${destId}">Edit di GeoPatok</button>` +
+            `<button type="button" class="popup-edit-btn" data-ds-idx="${idx}" data-dest-id="${destId}">Edit di Geopatok</button>` +
             `</div></div>`
         );
         poly.on("popupopen", () => {
@@ -2250,8 +2251,35 @@
     locateOnce(true);
 
     if ("serviceWorker" in navigator) {
-      // optional offline shell
-      navigator.serviceWorker.register("./sw.js").catch(() => {});
+      // Register SW and force-check for updates on each load (important after Vercel deploys)
+      navigator.serviceWorker
+        .register("./sw.js?v=3b")
+        .then((reg) => {
+          reg.update().catch(() => {});
+          // If a new worker is waiting, activate it
+          if (reg.waiting) {
+            reg.waiting.postMessage({ type: "SKIP_WAITING" });
+          }
+          reg.addEventListener("updatefound", () => {
+            const nw = reg.installing;
+            if (!nw) return;
+            nw.addEventListener("statechange", () => {
+              if (nw.state === "installed" && navigator.serviceWorker.controller) {
+                // New version ready — activate immediately
+                nw.postMessage({ type: "SKIP_WAITING" });
+              }
+            });
+          });
+        })
+        .catch(() => {});
+
+      // Reload once when the new SW takes control so UI matches latest deploy
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (refreshing) return;
+        refreshing = true;
+        window.location.reload();
+      });
     }
   }
 

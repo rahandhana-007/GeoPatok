@@ -1,4 +1,4 @@
-/* ===== GeoPatok — mobile-first land mapping UI ===== */
+/* ===== Geopatok V3 - By AR — mobile-first land mapping UI ===== */
 :root {
   --bg: #0b1220;
   --surface: #111827;
@@ -100,7 +100,7 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 52vw;
+  max-width: 58vw;
 }
 
 .subtitle {

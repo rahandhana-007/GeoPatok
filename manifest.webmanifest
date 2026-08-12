@@ -1,7 +1,7 @@
 {
-  "name": "GeoPatok — Solusi pemetaan lahan Anda",
-  "short_name": "GeoPatok",
-  "description": "GeoPatok — Solusi pemetaan lahan Anda. Mapping GPS akurat dari smartphone, hasil unduh GeoJSON.",
+  "name": "Geopatok V3 - By AR",
+  "short_name": "Geopatok V3",
+  "description": "Geopatok V3 - By AR. Solusi pemetaan lahan Anda. Mapping GPS akurat dari smartphone, hasil unduh GeoJSON.",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#0b1220",
