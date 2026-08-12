@@ -1033,16 +1033,33 @@
     toast("File diunduh: " + filename);
   }
 
+  /** Sanitize land name for filenames: polygon_<nama_lahan>.geojson */
+  function slugLandName(name) {
+    let s = String(name || "lahan")
+      .trim()
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, ""); // strip accents
+    s = s
+      .replace(/[^a-z0-9]+/gi, "_")
+      .replace(/_+/g, "_")
+      .replace(/^_|_$/g, "");
+    if (!s) s = "lahan";
+    return s.slice(0, 60);
+  }
+
+  function polygonFilename(landName) {
+    return "polygon_" + slugLandName(landName) + ".geojson";
+  }
+
   function exportActive() {
     const f = buildFeatureFromActive();
     if (!f) {
       toast("Belum ada poligon aktif (min. 3 titik)", true);
       return;
     }
-    const name = (f.properties.name || "lahan")
-      .replace(/[^\w\-]+/g, "_")
-      .slice(0, 40);
-    downloadGeoJSON(featureCollection([f]), `geopatok_${name}.geojson`);
+    const fname = polygonFilename(f.properties.name || state.meta.name || "lahan");
+    downloadGeoJSON(featureCollection([f]), fname);
   }
 
   function exportAll() {
@@ -1050,9 +1067,15 @@
       toast("Belum ada lahan tersimpan", true);
       return;
     }
+    // Single parcel → polygon_<nama>.geojson; many → polygon_semua_<tanggal>.geojson
+    if (state.parcels.length === 1) {
+      const n = state.parcels[0].properties && state.parcels[0].properties.name;
+      downloadGeoJSON(featureCollection(state.parcels), polygonFilename(n || "lahan"));
+      return;
+    }
     downloadGeoJSON(
       featureCollection(state.parcels),
-      `geopatok_semua_${dateStamp()}.geojson`
+      "polygon_semua_" + dateStamp() + ".geojson"
     );
   }
 
@@ -1998,10 +2021,10 @@
       btnDl.type = "button";
       btnDl.textContent = "GeoJSON";
       btnDl.onclick = () => {
-        const name = (p.properties.name || "lahan")
-          .replace(/[^\w\-]+/g, "_")
-          .slice(0, 40);
-        downloadGeoJSON(featureCollection([p]), `geopatok_${name}.geojson`);
+        downloadGeoJSON(
+          featureCollection([p]),
+          polygonFilename(p.properties.name || "lahan")
+        );
       };
       const btnEdit = document.createElement("button");
       btnEdit.type = "button";
