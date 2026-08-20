@@ -85,6 +85,14 @@
     btnRouteMode: $("btnRouteMode"),
     btnOpenMaps: $("btnOpenMaps"),
     btnClearRoute: $("btnClearRoute"),
+    bsreSearchBar: $("bsreSearchBar"),
+    bsreSearchForm: $("bsreSearchForm"),
+    bsreSearchInput: $("bsreSearchInput"),
+    bsreSearchResults: $("bsreSearchResults"),
+    btnBsreSearchClear: $("btnBsreSearchClear"),
+    btnBsreSearch: $("btnBsreSearch"),
+    btnSearchBsre: $("btnSearchBsre"),
+    bsreSearchMenuLabel: $("bsreSearchMenuLabel"),
   };
 
   // ---------- Map setup ----------
@@ -129,6 +137,12 @@
   let bsreLoaded = false;
   let bsreLoading = false;
   let bsreFeatureCount = 0;
+  /** Full BSRE feature list kept in memory for ID search */
+  let bsreFeatures = [];
+  /** featureIndex -> array of Leaflet polygon layers */
+  let bsreLayerIndex = {};
+  let bsreHighlightLayer = null;
+  let bsreSearchTimer = null;
   let routeState = {
     active: false,
     loading: false,
@@ -1198,7 +1212,269 @@
     datasetLayer.clearLayers();
     bsreLoaded = false;
     bsreFeatureCount = 0;
+    bsreFeatures = [];
+    bsreLayerIndex = {};
+    clearBsreHighlight();
+    hideBsreSearchUI();
     updateBsreLabel();
+    updateBsreSearchMenu();
+  }
+
+  function clearBsreHighlight() {
+    if (bsreHighlightLayer) {
+      try {
+        map.removeLayer(bsreHighlightLayer);
+      } catch (_) {}
+      bsreHighlightLayer = null;
+    }
+  }
+
+  function hideBsreSearchUI() {
+    if (els.bsreSearchBar) els.bsreSearchBar.hidden = true;
+    if (els.bsreSearchResults) {
+      els.bsreSearchResults.hidden = true;
+      els.bsreSearchResults.innerHTML = "";
+    }
+    if (els.bsreSearchInput) els.bsreSearchInput.value = "";
+    if (els.btnBsreSearchClear) els.btnBsreSearchClear.hidden = true;
+    document.getElementById("app")?.classList.remove("bsre-search-on");
+  }
+
+  function showBsreSearchUI() {
+    if (els.bsreSearchBar) els.bsreSearchBar.hidden = false;
+    document.getElementById("app")?.classList.add("bsre-search-on");
+    updateBsreSearchMenu();
+  }
+
+  function updateBsreSearchMenu() {
+    if (els.btnSearchBsre) {
+      els.btnSearchBsre.disabled = !bsreLoaded;
+    }
+    if (els.bsreSearchMenuLabel) {
+      els.bsreSearchMenuLabel.textContent = bsreLoaded
+        ? `${bsreFeatureCount.toLocaleString("id-ID")} bidang siap dicari by ID`
+        : "Muat data BSRE dulu, lalu cari by ID";
+    }
+  }
+
+  function featureIdOf(f) {
+    const p = (f && f.properties) || {};
+    return String(p.id || p.ID || p.Id || p.name || "").trim();
+  }
+
+  function featureHaText(f) {
+    const p = (f && f.properties) || {};
+    const ha =
+      p.area_ha != null
+        ? Number(p.area_ha)
+        : p.HA != null
+          ? Number(p.HA)
+          : null;
+    if (ha != null && isFinite(ha)) return formatHa(ha * 10000);
+    return "—";
+  }
+
+  /** Search BSRE features by ID (exact first, then substring). Max 30 hits. */
+  function searchBsreById(query) {
+    const q = String(query || "")
+      .trim()
+      .toLowerCase();
+    if (!q || !bsreFeatures.length) return [];
+
+    const exact = [];
+    const starts = [];
+    const contains = [];
+
+    bsreFeatures.forEach((f, idx) => {
+      const id = featureIdOf(f).toLowerCase();
+      if (!id) return;
+      if (id === q) exact.push({ f, idx, id: featureIdOf(f) });
+      else if (id.startsWith(q)) starts.push({ f, idx, id: featureIdOf(f) });
+      else if (id.includes(q)) contains.push({ f, idx, id: featureIdOf(f) });
+    });
+
+    return exact.concat(starts, contains).slice(0, 30);
+  }
+
+  function getFeatureBounds(f) {
+    const g = f && f.geometry;
+    if (!g) return null;
+    const pts = [];
+    const walk = (coords) => {
+      if (!coords || !coords.length) return;
+      if (typeof coords[0] === "number") {
+        pts.push([coords[1], coords[0]]);
+        return;
+      }
+      coords.forEach(walk);
+    };
+    walk(g.coordinates);
+    if (pts.length < 2) return null;
+    try {
+      return L.latLngBounds(pts);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function focusBsreFeature(idx, opts) {
+    opts = opts || {};
+    const f = bsreFeatures[idx];
+    if (!f) {
+      toast("Bidang tidak ditemukan", true);
+      return;
+    }
+    const id = featureIdOf(f) || "Bidang";
+    const bounds = getFeatureBounds(f);
+    clearBsreHighlight();
+
+    // Draw highlight outline on top
+    try {
+      const g = f.geometry;
+      const rings =
+        g.type === "Polygon"
+          ? [g.coordinates]
+          : g.type === "MultiPolygon"
+            ? g.coordinates
+            : [];
+      const layers = [];
+      rings.forEach((polyCoords) => {
+        const latlngs = (polyCoords[0] || []).map((c) => [c[1], c[0]]);
+        if (latlngs.length < 3) return;
+        layers.push(
+          L.polygon(latlngs, {
+            color: "#22d3ee",
+            weight: 4,
+            opacity: 1,
+            fillColor: "#22d3ee",
+            fillOpacity: 0.28,
+            interactive: true,
+          })
+        );
+      });
+      if (layers.length) {
+        bsreHighlightLayer = L.featureGroup(layers).addTo(map);
+        const destId = "dest_hit_" + idx;
+        bsreHighlightLayer.bindPopup(
+          `<div class="ds-popup">` +
+            `<strong>${escapeHtml(id)}</strong><br>` +
+            `Luas: <strong>${escapeHtml(featureHaText(f))}</strong>` +
+            `<div class="popup-actions">` +
+            `<button type="button" class="popup-dest-btn" data-dest-id="${destId}">Set as destination</button>` +
+            `<button type="button" class="popup-edit-btn" data-dest-id="${destId}">Edit di Geopatok</button>` +
+            `</div></div>`
+        );
+        bsreHighlightLayer.on("popupopen", () => {
+          const destBtn = document.querySelector(
+            `.popup-dest-btn[data-dest-id="${destId}"]`
+          );
+          if (destBtn) {
+            destBtn.onclick = () => {
+              const ring =
+                f.geometry.type === "Polygon"
+                  ? f.geometry.coordinates[0]
+                  : f.geometry.coordinates[0][0];
+              const latlngs = (ring || []).map((c) => [c[1], c[0]]);
+              destinationFromPolygonLatLngs(latlngs, id);
+            };
+          }
+          const editBtn = document.querySelector(
+            `.popup-edit-btn[data-dest-id="${destId}"]`
+          );
+          if (editBtn) {
+            editBtn.onclick = () => {
+              const polyCoords =
+                f.geometry.type === "Polygon"
+                  ? f.geometry.coordinates
+                  : f.geometry.coordinates[0];
+              const asFeature = {
+                type: "Feature",
+                properties: { ...(f.properties || {}), name: id },
+                geometry: { type: "Polygon", coordinates: polyCoords },
+              };
+              enrichFeature(asFeature);
+              loadFeatureAsActive(asFeature);
+              map.closePopup();
+              toast("Bidang dibuka sebagai gambar aktif");
+            };
+          }
+        });
+      }
+    } catch (e) {
+      console.warn(e);
+    }
+
+    if (bounds && bounds.isValid()) {
+      map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
+    }
+
+    // Open popup after pan
+    setTimeout(() => {
+      if (bsreHighlightLayer) bsreHighlightLayer.openPopup();
+    }, 280);
+
+    if (els.bsreSearchResults) {
+      els.bsreSearchResults.hidden = true;
+    }
+    setStatus("BSRE · " + id);
+    if (!opts.silent) toast("Ditemukan: " + id);
+  }
+
+  function renderBsreSearchResults(hits, query) {
+    const box = els.bsreSearchResults;
+    if (!box) return;
+    if (!query) {
+      box.hidden = true;
+      box.innerHTML = "";
+      return;
+    }
+    if (!hits.length) {
+      box.hidden = false;
+      box.innerHTML =
+        '<div class="bsre-empty">Tidak ada ID yang cocok dengan <strong>' +
+        escapeHtml(query) +
+        "</strong></div>";
+      return;
+    }
+    box.hidden = false;
+    box.innerHTML = hits
+      .map((h) => {
+        const ha = featureHaText(h.f);
+        return (
+          `<button type="button" class="bsre-hit" data-bsre-idx="${h.idx}">` +
+          `<span class="bsre-hit-id">${escapeHtml(h.id)}</span>` +
+          `<span class="bsre-hit-ha">${escapeHtml(ha)}</span>` +
+          `</button>`
+        );
+      })
+      .join("");
+
+    box.querySelectorAll(".bsre-hit").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const idx = parseInt(btn.getAttribute("data-bsre-idx"), 10);
+        focusBsreFeature(idx);
+      });
+    });
+  }
+
+  function runBsreSearch(fromSubmit) {
+    if (!bsreLoaded) {
+      toast("Muat data BSRE dulu", true);
+      return;
+    }
+    const q = (els.bsreSearchInput && els.bsreSearchInput.value) || "";
+    if (els.btnBsreSearchClear) {
+      els.btnBsreSearchClear.hidden = !String(q).trim();
+    }
+    const hits = searchBsreById(q);
+    renderBsreSearchResults(hits, String(q).trim());
+
+    // On submit / Enter: jump to best match if any
+    if (fromSubmit && hits.length) {
+      focusBsreFeature(hits[0].idx);
+    } else if (fromSubmit && String(q).trim() && !hits.length) {
+      toast("ID tidak ditemukan", true);
+    }
   }
 
   // ---------- Navigation / routing ----------
@@ -1564,9 +1840,10 @@
   function renderDatasetFeatures(features, opts) {
     opts = opts || {};
     datasetLayer.clearLayers();
+    clearBsreHighlight();
+    bsreLayerIndex = {};
     const boundsPts = [];
     const color = opts.color || "#f59e0b";
-    const maxLabels = opts.maxLabels != null ? opts.maxLabels : 0; // 0 = no permanent labels
 
     features.forEach((f, idx) => {
       const g = f.geometry;
@@ -1591,6 +1868,8 @@
             ? g.coordinates
             : [];
 
+      bsreLayerIndex[idx] = [];
+
       rings.forEach((polyCoords) => {
         const latlngs = (polyCoords[0] || []).map((c) => {
           boundsPts.push([c[1], c[0]]);
@@ -1612,7 +1891,7 @@
           `<div class="ds-popup">` +
             `<strong>${escapeHtml(String(name))}</strong><br>` +
             `Luas: <strong>${escapeHtml(haText)}</strong>` +
-            (props.id && props.id !== name
+            (props.id && String(props.id) !== String(name)
               ? `<br>ID: ${escapeHtml(String(props.id))}`
               : "") +
             `<div class="popup-actions">` +
@@ -1634,7 +1913,6 @@
           );
           if (btn) {
             btn.onclick = () => {
-              // Convert this multipolygon piece / feature to active drawing
               const asFeature = {
                 type: "Feature",
                 properties: { ...props, name: String(name) },
@@ -1651,10 +1929,11 @@
           }
         });
         poly.addTo(datasetLayer);
+        bsreLayerIndex[idx].push(poly);
       });
     });
 
-    if (boundsPts.length) {
+    if (boundsPts.length && opts.fitBounds !== false) {
       try {
         map.fitBounds(boundsPts, { padding: [30, 30], maxZoom: 14 });
       } catch (_) {}
@@ -1666,7 +1945,6 @@
     // Toggle off if already loaded
     if (bsreLoaded) {
       clearDatasetLayer();
-      // keep active route if any
       toast("Data BSRE dilepas dari peta");
       setStatus(routeState.active ? "Rute aktif" : "Siap memetakan");
       return;
@@ -1686,24 +1964,29 @@
       const features = normalizeImported(data).map(enrichFeature);
       if (!features.length) throw new Error("Tidak ada poligon");
 
+      bsreFeatures = features;
       bsreFeatureCount = renderDatasetFeatures(features, {
         color: "#f59e0b",
       });
       bsreLoaded = true;
+      showBsreSearchUI();
       setStatus(
         `BSRE · ${bsreFeatureCount.toLocaleString("id-ID")} bidang`
       );
       toast(
-        `Data BSRE dimuat: ${bsreFeatureCount.toLocaleString("id-ID")} bidang`
+        `Data BSRE dimuat: ${bsreFeatureCount.toLocaleString("id-ID")} bidang — cari by ID di atas`
       );
     } catch (e) {
       console.error(e);
       bsreLoaded = false;
+      bsreFeatures = [];
+      hideBsreSearchUI();
       toast("Gagal memuat data BSRE", true);
       setStatus("Gagal muat BSRE");
     } finally {
       bsreLoading = false;
       updateBsreLabel();
+      updateBsreSearchMenu();
     }
   }
 
@@ -2152,6 +2435,55 @@
       });
     }
 
+    if (els.btnSearchBsre) {
+      els.btnSearchBsre.addEventListener("click", () => {
+        if (!bsreLoaded) {
+          toast("Muat data BSRE dulu", true);
+          return;
+        }
+        closeSheet("moreSheet");
+        showBsreSearchUI();
+        if (els.bsreSearchInput) {
+          els.bsreSearchInput.focus();
+          els.bsreSearchInput.select();
+        }
+      });
+    }
+
+    if (els.bsreSearchForm) {
+      els.bsreSearchForm.addEventListener("submit", (e) => {
+        e.preventDefault();
+        runBsreSearch(true);
+      });
+    }
+    if (els.bsreSearchInput) {
+      els.bsreSearchInput.addEventListener("input", () => {
+        const has = !!String(els.bsreSearchInput.value || "").trim();
+        if (els.btnBsreSearchClear) els.btnBsreSearchClear.hidden = !has;
+        clearTimeout(bsreSearchTimer);
+        bsreSearchTimer = setTimeout(() => runBsreSearch(false), 220);
+      });
+    }
+    if (els.btnBsreSearchClear) {
+      els.btnBsreSearchClear.addEventListener("click", () => {
+        if (els.bsreSearchInput) els.bsreSearchInput.value = "";
+        els.btnBsreSearchClear.hidden = true;
+        clearBsreHighlight();
+        renderBsreSearchResults([], "");
+        if (els.bsreSearchInput) els.bsreSearchInput.focus();
+      });
+    }
+
+    // Tap map background closes search dropdown (not when typing)
+    map.on("click", () => {
+      if (els.bsreSearchResults && !els.bsreSearchResults.hidden) {
+        // keep results if user is interacting with search bar
+        const ae = document.activeElement;
+        if (ae && els.bsreSearchBar && els.bsreSearchBar.contains(ae)) return;
+        els.bsreSearchResults.hidden = true;
+      }
+    });
+
     $("btnImport").addEventListener("click", () => {
       closeSheet("moreSheet");
       openImportSheet();
@@ -2276,7 +2608,7 @@
     if ("serviceWorker" in navigator) {
       // Register SW and force-check for updates on each load (important after Vercel deploys)
       navigator.serviceWorker
-        .register("./sw.js?v=3b")
+        .register("./sw.js?v=3d")
         .then((reg) => {
           reg.update().catch(() => {});
           // If a new worker is waiting, activate it

@@ -1,5 +1,5 @@
 /* Geopatok V3 - By AR — network-first app shell so deploys show up */
-const CACHE = "geopatok-v3b";
+const CACHE = "geopatok-v3d";
 const ASSETS = [
   "./",
   "./index.html",
