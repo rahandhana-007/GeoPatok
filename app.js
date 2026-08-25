@@ -9,10 +9,25 @@
   // ---------- Constants & state ----------
   const STORAGE_KEY = "geopatok_parcels_v1";
   const SETTINGS_KEY = "geopatok_settings_v1";
+  const MARKED_IDS_KEY = "geopatok_marked_ids_v1";
   const APP_NAME = "Geopatok V3 - By AR";
   const APP_SHORT = "Geopatok V3";
   /** Saat Tutup: sederhanakan poligon ke N titik paling mewakili (jika lebih banyak) */
   const CLOSE_TARGET_POINTS = 8;
+  const MARK_STYLE = {
+    color: "#7f1d1d",
+    fillColor: "#991b1b",
+    weight: 2,
+    opacity: 0.95,
+    fillOpacity: 0.45,
+  };
+  const BSRE_STYLE = {
+    color: "#f59e0b",
+    fillColor: "#f59e0b",
+    weight: 1,
+    opacity: 0.85,
+    fillOpacity: 0.14,
+  };
 
   const state = {
     points: [], // [{lat, lng, accuracy, altitude, timestamp}]
@@ -93,7 +108,134 @@
     btnBsreSearch: $("btnBsreSearch"),
     btnSearchBsre: $("btnSearchBsre"),
     bsreSearchMenuLabel: $("bsreSearchMenuLabel"),
+    btnMarkIds: $("btnMarkIds"),
+    markIdsMenuLabel: $("markIdsMenuLabel"),
+    markSheet: $("markSheet"),
+    markIdsInput: $("markIdsInput"),
+    btnMarkToggle: $("btnMarkToggle"),
+    btnMarkOnly: $("btnMarkOnly"),
+    btnUnmarkOnly: $("btnUnmarkOnly"),
+    btnClearAllMarks: $("btnClearAllMarks"),
+    markedIdsList: $("markedIdsList"),
+    markCount: $("markCount"),
+    markActionResult: $("markActionResult"),
+    btnInstallApp: $("btnInstallApp"),
+    installAppLabel: $("installAppLabel"),
+    installBanner: $("installBanner"),
+    btnInstallNow: $("btnInstallNow"),
+    btnInstallLater: $("btnInstallLater"),
   };
+
+  // ---------- PWA install ----------
+  let deferredInstallPrompt = null;
+  const INSTALL_DISMISS_KEY = "geopatok_install_dismissed_v1";
+
+  function isStandalonePwa() {
+    return (
+      window.matchMedia("(display-mode: standalone)").matches ||
+      window.navigator.standalone === true
+    );
+  }
+
+  function updateInstallUI() {
+    const canInstall = !!deferredInstallPrompt && !isStandalonePwa();
+    if (els.btnInstallApp) {
+      // Keep menu entry visible with guidance even if prompt not ready
+      els.btnInstallApp.hidden = isStandalonePwa();
+      if (els.installAppLabel) {
+        if (isStandalonePwa()) {
+          els.installAppLabel.textContent = "Sudah terpasang sebagai aplikasi";
+        } else if (canInstall) {
+          els.installAppLabel.textContent = "Ketuk untuk memasang ke layar utama";
+        } else {
+          els.installAppLabel.textContent =
+            "Chrome → ⋮ → Install app / Tambahkan ke layar utama";
+        }
+      }
+    }
+  }
+
+  function showInstallBannerIfNeeded() {
+    if (!els.installBanner) return;
+    if (isStandalonePwa()) {
+      els.installBanner.hidden = true;
+      return;
+    }
+    if (!deferredInstallPrompt) return;
+    try {
+      if (localStorage.getItem(INSTALL_DISMISS_KEY) === "1") return;
+    } catch (_) {}
+    els.installBanner.hidden = false;
+  }
+
+  async function triggerInstall() {
+    if (isStandalonePwa()) {
+      toast("Geopatok sudah berjalan sebagai aplikasi");
+      return;
+    }
+    if (!deferredInstallPrompt) {
+      toast(
+        "Di Chrome Android: menu ⋮ → Install app / Tambahkan ke layar utama",
+        false
+      );
+      // open help as guidance
+      openSheet("helpSheet");
+      return;
+    }
+    try {
+      deferredInstallPrompt.prompt();
+      const choice = await deferredInstallPrompt.userChoice;
+      if (choice && choice.outcome === "accepted") {
+        toast("Geopatok V3 dipasang");
+        if (els.installBanner) els.installBanner.hidden = true;
+      } else {
+        toast("Pemasangan dibatalkan");
+      }
+    } catch (e) {
+      console.warn(e);
+      toast("Gagal memunculkan dialog install", true);
+    } finally {
+      deferredInstallPrompt = null;
+      updateInstallUI();
+    }
+  }
+
+  function bindInstallEvents() {
+    window.addEventListener("beforeinstallprompt", (e) => {
+      e.preventDefault();
+      deferredInstallPrompt = e;
+      updateInstallUI();
+      showInstallBannerIfNeeded();
+    });
+
+    window.addEventListener("appinstalled", () => {
+      deferredInstallPrompt = null;
+      if (els.installBanner) els.installBanner.hidden = true;
+      updateInstallUI();
+      toast("Berhasil dipasang di perangkat");
+      setStatus("Geopatok V3 terpasang");
+    });
+
+    if (els.btnInstallApp) {
+      els.btnInstallApp.addEventListener("click", () => {
+        closeSheet("moreSheet");
+        triggerInstall();
+      });
+    }
+    if (els.btnInstallNow) {
+      els.btnInstallNow.addEventListener("click", () => triggerInstall());
+    }
+    if (els.btnInstallLater) {
+      els.btnInstallLater.addEventListener("click", () => {
+        if (els.installBanner) els.installBanner.hidden = true;
+        try {
+          localStorage.setItem(INSTALL_DISMISS_KEY, "1");
+        } catch (_) {}
+      });
+    }
+
+    updateInstallUI();
+  }
 
   // ---------- Map setup ----------
   const map = L.map("map", {
@@ -141,6 +283,10 @@
   let bsreFeatures = [];
   /** featureIndex -> array of Leaflet polygon layers */
   let bsreLayerIndex = {};
+  /** normalizedId(lower) -> [featureIndex, ...] */
+  let bsreIdIndex = {};
+  /** Set of canonical marked IDs (as stored / original case preferred) */
+  let markedIds = new Set();
   let bsreHighlightLayer = null;
   let bsreSearchTimer = null;
   let routeState = {
@@ -1214,10 +1360,348 @@
     bsreFeatureCount = 0;
     bsreFeatures = [];
     bsreLayerIndex = {};
+    bsreIdIndex = {};
     clearBsreHighlight();
     hideBsreSearchUI();
     updateBsreLabel();
     updateBsreSearchMenu();
+    updateMarkMenuLabel();
+  }
+
+  // ---------- Permanent ID marks (dark red) ----------
+  function loadMarkedIds() {
+    try {
+      const raw = localStorage.getItem(MARKED_IDS_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      markedIds = new Set(
+        (Array.isArray(arr) ? arr : [])
+          .map((x) => String(x || "").trim())
+          .filter(Boolean)
+      );
+    } catch (_) {
+      markedIds = new Set();
+    }
+    updateMarkMenuLabel();
+  }
+
+  function saveMarkedIds() {
+    try {
+      localStorage.setItem(MARKED_IDS_KEY, JSON.stringify(Array.from(markedIds)));
+    } catch (_) {
+      toast("Gagal menyimpan tanda ke perangkat", true);
+    }
+    updateMarkMenuLabel();
+  }
+
+  function normalizeIdKey(id) {
+    return String(id || "").trim().toLowerCase();
+  }
+
+  function isIdMarked(id) {
+    const key = normalizeIdKey(id);
+    if (!key) return false;
+    for (const m of markedIds) {
+      if (normalizeIdKey(m) === key) return true;
+    }
+    return false;
+  }
+
+  function getMarkedCanonical(id) {
+    const key = normalizeIdKey(id);
+    for (const m of markedIds) {
+      if (normalizeIdKey(m) === key) return m;
+    }
+    return null;
+  }
+
+  function parseIdList(text) {
+    return String(text || "")
+      .split(/[\s,;|]+/g)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  function buildBsreIdIndex(features) {
+    bsreIdIndex = {};
+    features.forEach((f, idx) => {
+      const id = featureIdOf(f);
+      if (!id) return;
+      const key = normalizeIdKey(id);
+      if (!bsreIdIndex[key]) bsreIdIndex[key] = [];
+      bsreIdIndex[key].push(idx);
+    });
+  }
+
+  function updateMarkMenuLabel() {
+    const n = markedIds.size;
+    if (els.markIdsMenuLabel) {
+      els.markIdsMenuLabel.textContent =
+        n > 0
+          ? `${n.toLocaleString("id-ID")} ID tertandai (merah gelap)`
+          : "Tanda merah gelap permanen (multi-ID)";
+    }
+    if (els.markCount) els.markCount.textContent = String(n);
+  }
+
+  function styleForId(id) {
+    return isIdMarked(id) ? MARK_STYLE : BSRE_STYLE;
+  }
+
+  function applyMarkStyleToLayers(id, marked) {
+    const key = normalizeIdKey(id);
+    const idxs = bsreIdIndex[key] || [];
+    const style = marked ? MARK_STYLE : BSRE_STYLE;
+    idxs.forEach((idx) => {
+      const layers = bsreLayerIndex[idx] || [];
+      layers.forEach((poly) => {
+        poly.setStyle({
+          color: style.color,
+          fillColor: style.fillColor,
+          weight: style.weight,
+          opacity: style.opacity,
+          fillOpacity: style.fillOpacity,
+        });
+        if (marked && poly.bringToFront) {
+          try {
+            poly.bringToFront();
+          } catch (_) {}
+        }
+      });
+    });
+    return idxs.length;
+  }
+
+  function applyAllMarkStyles() {
+    if (!bsreLoaded) return;
+    // Reset all to default then paint marks (safer with large sets: paint only marks)
+    Object.keys(bsreLayerIndex).forEach((idx) => {
+      const f = bsreFeatures[idx];
+      const id = featureIdOf(f);
+      const style = styleForId(id);
+      (bsreLayerIndex[idx] || []).forEach((poly) => {
+        poly.setStyle({
+          color: style.color,
+          fillColor: style.fillColor,
+          weight: style.weight,
+          opacity: style.opacity,
+          fillOpacity: style.fillOpacity,
+        });
+      });
+    });
+    // Bring marked to front
+    markedIds.forEach((id) => applyMarkStyleToLayers(id, true));
+  }
+
+  function openMarkSheet() {
+    renderMarkedIdsList();
+    if (els.markActionResult) {
+      els.markActionResult.hidden = true;
+      els.markActionResult.innerHTML = "";
+    }
+    openSheet("markSheet");
+    if (els.markIdsInput) {
+      setTimeout(() => els.markIdsInput.focus(), 200);
+    }
+  }
+
+  function renderMarkedIdsList() {
+    const box = els.markedIdsList;
+    if (!box) return;
+    updateMarkMenuLabel();
+    const ids = Array.from(markedIds).sort((a, b) =>
+      a.localeCompare(b, "id", { sensitivity: "base" })
+    );
+    if (!ids.length) {
+      box.innerHTML =
+        '<div class="empty-state" style="padding:16px 8px">Belum ada ID tertandai.</div>';
+      return;
+    }
+    box.innerHTML = ids
+      .map((id) => {
+        const onMap = bsreLoaded && (bsreIdIndex[normalizeIdKey(id)] || []).length > 0;
+        return (
+          `<div class="marked-id-row">` +
+          `<div class="marked-id-main">` +
+          `<span class="marked-id-dot"></span>` +
+          `<span class="marked-id-text">${escapeHtml(id)}</span>` +
+          (onMap
+            ? '<span class="marked-id-badge">di peta</span>'
+            : bsreLoaded
+              ? '<span class="marked-id-badge muted">tidak di BSRE</span>'
+              : "") +
+          `</div>` +
+          `<div class="marked-id-actions">` +
+          `<button type="button" data-focus-mark="${escapeHtml(id)}" ${
+            onMap ? "" : "disabled"
+          }>Lihat</button>` +
+          `<button type="button" class="danger" data-unmark="${escapeHtml(
+            id
+          )}">Hapus</button>` +
+          `</div></div>`
+        );
+      })
+      .join("");
+
+    box.querySelectorAll("[data-unmark]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.getAttribute("data-unmark");
+        unmarkIds([id]);
+        renderMarkedIdsList();
+        toast("Tanda dihapus: " + id);
+      });
+    });
+    box.querySelectorAll("[data-focus-mark]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.getAttribute("data-focus-mark");
+        focusMarkedId(id);
+      });
+    });
+  }
+
+  function focusMarkedId(id) {
+    const key = normalizeIdKey(id);
+    const idxs = bsreIdIndex[key] || [];
+    if (!idxs.length) {
+      toast("ID belum ada di data BSRE yang dimuat", true);
+      return;
+    }
+    focusBsreFeature(idxs[0], { silent: false });
+    closeSheet("markSheet");
+  }
+
+  /**
+   * mode: 'toggle' | 'mark' | 'unmark'
+   */
+  function processMarkInput(mode) {
+    const raw = (els.markIdsInput && els.markIdsInput.value) || "";
+    const list = parseIdList(raw);
+    if (!list.length) {
+      toast("Masukkan minimal 1 ID", true);
+      return;
+    }
+
+    // unique by normalized key, keep first casing
+    const seen = new Map();
+    list.forEach((id) => {
+      const k = normalizeIdKey(id);
+      if (!seen.has(k)) seen.set(k, id);
+    });
+
+    let marked = 0;
+    let unmarked = 0;
+    let missing = 0;
+    const actions = [];
+
+    seen.forEach((id, key) => {
+      const already = isIdMarked(id);
+      // Prefer canonical ID from dataset if available
+      let canonical = id;
+      const idxs = bsreIdIndex[key] || [];
+      if (idxs.length) {
+        const fromData = featureIdOf(bsreFeatures[idxs[0]]);
+        if (fromData) canonical = fromData;
+      } else if (bsreLoaded) {
+        missing++;
+      }
+
+      if (mode === "mark") {
+        if (!already) {
+          markedIds.add(canonical);
+          applyMarkStyleToLayers(canonical, true);
+          marked++;
+          actions.push("+" + canonical);
+        }
+      } else if (mode === "unmark") {
+        if (already) {
+          const prev = getMarkedCanonical(id);
+          markedIds.delete(prev);
+          applyMarkStyleToLayers(prev || canonical, false);
+          unmarked++;
+          actions.push("-" + (prev || canonical));
+        }
+      } else {
+        // toggle
+        if (already) {
+          const prev = getMarkedCanonical(id);
+          markedIds.delete(prev);
+          applyMarkStyleToLayers(prev || canonical, false);
+          unmarked++;
+          actions.push("-" + (prev || canonical));
+        } else {
+          markedIds.add(canonical);
+          applyMarkStyleToLayers(canonical, true);
+          marked++;
+          actions.push("+" + canonical);
+        }
+      }
+    });
+
+    saveMarkedIds();
+    renderMarkedIdsList();
+
+    if (els.markIdsInput) els.markIdsInput.value = "";
+
+    const parts = [];
+    if (marked) parts.push(marked + " ditandai");
+    if (unmarked) parts.push(unmarked + " dihapus");
+    if (missing) parts.push(missing + " tidak ada di BSRE (tetap disimpan)");
+    if (!parts.length) parts.push("Tidak ada perubahan");
+
+    const msg = parts.join(" · ");
+    toast(msg);
+    if (els.markActionResult) {
+      els.markActionResult.hidden = false;
+      els.markActionResult.classList.remove("error");
+      els.markActionResult.innerHTML =
+        `<strong>${escapeHtml(msg)}</strong>` +
+        (actions.length
+          ? `<br><small>${escapeHtml(actions.slice(0, 12).join(", "))}${
+              actions.length > 12 ? "…" : ""
+            }</small>`
+          : "");
+    }
+
+    // If BSRE loaded and we marked something, fit to those polygons
+    if (bsreLoaded && marked > 0) {
+      const bpts = [];
+      seen.forEach((id, key) => {
+        if (!isIdMarked(id)) return;
+        (bsreIdIndex[key] || []).forEach((idx) => {
+          const f = bsreFeatures[idx];
+          const b = getFeatureBounds(f);
+          if (b) {
+            bpts.push(b.getSouthWest(), b.getNorthEast());
+          }
+        });
+      });
+      if (bpts.length) {
+        try {
+          map.fitBounds(bpts, { padding: [40, 40], maxZoom: 17 });
+        } catch (_) {}
+      }
+    }
+  }
+
+  function unmarkIds(ids) {
+    ids.forEach((id) => {
+      const prev = getMarkedCanonical(id);
+      if (!prev) return;
+      markedIds.delete(prev);
+      applyMarkStyleToLayers(prev, false);
+    });
+    saveMarkedIds();
+    updateMarkMenuLabel();
+  }
+
+  function clearAllMarks() {
+    if (!markedIds.size) return;
+    if (!confirm("Hapus semua tanda merah (" + markedIds.size + " ID)?")) return;
+    const all = Array.from(markedIds);
+    markedIds.clear();
+    all.forEach((id) => applyMarkStyleToLayers(id, false));
+    saveMarkedIds();
+    renderMarkedIdsList();
+    toast("Semua tanda dihapus");
   }
 
   function clearBsreHighlight() {
@@ -1842,14 +2326,17 @@
     datasetLayer.clearLayers();
     clearBsreHighlight();
     bsreLayerIndex = {};
+    buildBsreIdIndex(features);
     const boundsPts = [];
-    const color = opts.color || "#f59e0b";
 
     features.forEach((f, idx) => {
       const g = f.geometry;
       if (!g) return;
       const props = f.properties || {};
       const name = props.name || props.id || "Bidang";
+      const fid = featureIdOf(f) || String(name);
+      const marked = isIdMarked(fid);
+      const style = marked ? MARK_STYLE : BSRE_STYLE;
       const ha =
         props.area_ha != null
           ? props.area_ha
@@ -1878,15 +2365,16 @@
         if (latlngs.length < 3) return;
 
         const poly = L.polygon(latlngs, {
-          color: color,
-          weight: 1,
-          opacity: 0.85,
-          fillColor: color,
-          fillOpacity: 0.14,
+          color: style.color,
+          weight: style.weight,
+          opacity: style.opacity,
+          fillColor: style.fillColor,
+          fillOpacity: style.fillOpacity,
           renderer: canvasRenderer,
           smoothFactor: 1.5,
         });
         const destId = "dest_ds_" + idx + "_" + Math.random().toString(36).slice(2, 7);
+        const markBtnId = "mark_ds_" + destId;
         poly.bindPopup(
           `<div class="ds-popup">` +
             `<strong>${escapeHtml(String(name))}</strong><br>` +
@@ -1894,8 +2382,14 @@
             (props.id && String(props.id) !== String(name)
               ? `<br>ID: ${escapeHtml(String(props.id))}`
               : "") +
+            (marked
+              ? `<br><span style="color:#fca5a5;font-weight:700">● Tertandai</span>`
+              : "") +
             `<div class="popup-actions">` +
             `<button type="button" class="popup-dest-btn" data-dest-id="${destId}">Set as destination</button>` +
+            `<button type="button" class="popup-mark-btn" data-mark-id="${markBtnId}" data-fid="${escapeHtml(
+              fid
+            )}">${marked ? "Hapus tanda merah" : "Tandai merah"}</button>` +
             `<button type="button" class="popup-edit-btn" data-ds-idx="${idx}" data-dest-id="${destId}">Edit di Geopatok</button>` +
             `</div></div>`
         );
@@ -1906,6 +2400,25 @@
           if (destBtn) {
             destBtn.onclick = () => {
               destinationFromPolygonLatLngs(latlngs, String(name));
+            };
+          }
+          const markBtn = document.querySelector(
+            `.popup-mark-btn[data-mark-id="${markBtnId}"]`
+          );
+          if (markBtn) {
+            markBtn.onclick = () => {
+              const id = markBtn.getAttribute("data-fid") || fid;
+              if (isIdMarked(id)) {
+                unmarkIds([id]);
+                toast("Tanda dihapus: " + id);
+              } else {
+                const canonical = featureIdOf(f) || id;
+                markedIds.add(canonical);
+                applyMarkStyleToLayers(canonical, true);
+                saveMarkedIds();
+                toast("Ditandai: " + canonical);
+              }
+              map.closePopup();
             };
           }
           const btn = document.querySelector(
@@ -1932,6 +2445,9 @@
         bsreLayerIndex[idx].push(poly);
       });
     });
+
+    // Ensure marked polygons are visually on top
+    markedIds.forEach((id) => applyMarkStyleToLayers(id, true));
 
     if (boundsPts.length && opts.fitBounds !== false) {
       try {
@@ -2450,6 +2966,25 @@
       });
     }
 
+    if (els.btnMarkIds) {
+      els.btnMarkIds.addEventListener("click", () => {
+        closeSheet("moreSheet");
+        openMarkSheet();
+      });
+    }
+    if (els.btnMarkToggle) {
+      els.btnMarkToggle.addEventListener("click", () => processMarkInput("toggle"));
+    }
+    if (els.btnMarkOnly) {
+      els.btnMarkOnly.addEventListener("click", () => processMarkInput("mark"));
+    }
+    if (els.btnUnmarkOnly) {
+      els.btnUnmarkOnly.addEventListener("click", () => processMarkInput("unmark"));
+    }
+    if (els.btnClearAllMarks) {
+      els.btnClearAllMarks.addEventListener("click", () => clearAllMarks());
+    }
+
     if (els.bsreSearchForm) {
       els.bsreSearchForm.addEventListener("submit", (e) => {
         e.preventDefault();
@@ -2596,6 +3131,7 @@
   // ---------- Boot ----------
   function init() {
     loadSettings();
+    loadMarkedIds();
     loadParcels();
     bindEvents();
     updateTapLabel();
@@ -2605,10 +3141,12 @@
     // try initial center
     locateOnce(true);
 
+    bindInstallEvents();
+
     if ("serviceWorker" in navigator) {
       // Register SW and force-check for updates on each load (important after Vercel deploys)
       navigator.serviceWorker
-        .register("./sw.js?v=3d")
+        .register("./sw.js", { scope: "./" })
         .then((reg) => {
           reg.update().catch(() => {});
           // If a new worker is waiting, activate it

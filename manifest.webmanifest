@@ -1,19 +1,43 @@
 {
+  "id": "/?source=pwa",
   "name": "Geopatok V3 - By AR",
   "short_name": "Geopatok V3",
   "description": "Geopatok V3 - By AR. Solusi pemetaan lahan Anda. Mapping GPS akurat dari smartphone, hasil unduh GeoJSON.",
-  "start_url": "./index.html",
+  "lang": "id",
+  "dir": "ltr",
+  "start_url": "./index.html?source=pwa",
+  "scope": "./",
   "display": "standalone",
+  "display_override": ["standalone", "browser"],
+  "orientation": "portrait-primary",
   "background_color": "#0b1220",
   "theme_color": "#0f766e",
-  "orientation": "portrait-primary",
-  "lang": "id",
+  "categories": ["utilities", "navigation", "productivity"],
+  "prefer_related_applications": false,
   "icons": [
     {
-      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f766e'/%3E%3Ccircle cx='32' cy='28' r='14' fill='none' stroke='%23a7f3d0' stroke-width='3'/%3E%3Ccircle cx='32' cy='28' r='5' fill='%23fbbf24'/%3E%3Cpath d='M32 42 V52' stroke='%23a7f3d0' stroke-width='3' stroke-linecap='round'/%3E%3Cpath d='M24 52 H40' stroke='%23a7f3d0' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

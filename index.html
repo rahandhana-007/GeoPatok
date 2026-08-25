@@ -4,14 +4,20 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#0f766e" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Geopatok V3" />
+  <meta name="application-name" content="Geopatok V3" />
   <meta name="description" content="Geopatok V3 - By AR. Solusi pemetaan lahan Anda. Mapping GPS akurat, ekspor GeoJSON." />
+  <meta name="format-detection" content="telephone=no" />
   <title>Geopatok V3 - By AR</title>
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f766e'/%3E%3Ccircle cx='32' cy='28' r='14' fill='none' stroke='%23a7f3d0' stroke-width='3'/%3E%3Ccircle cx='32' cy='28' r='5' fill='%23fbbf24'/%3E%3Cpath d='M32 42 V52' stroke='%23a7f3d0' stroke-width='3' stroke-linecap='round'/%3E%3Cpath d='M24 52 H40' stroke='%23a7f3d0' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
-  <link rel="stylesheet" href="styles.css?v=3d" />
+  <link rel="stylesheet" href="styles.css?v=3f" />
 </head>
 <body>
   <div id="app">
@@ -178,6 +184,20 @@
               <small id="bsreSearchMenuLabel">Muat data BSRE dulu, lalu cari by ID</small>
             </div>
           </button>
+          <button type="button" id="btnMarkIds" class="menu-item">
+            <span class="menu-icon">🚩</span>
+            <div>
+              <strong>Tandai ID peta</strong>
+              <small id="markIdsMenuLabel">Tanda merah gelap permanen (multi-ID)</small>
+            </div>
+          </button>
+          <button type="button" id="btnInstallApp" class="menu-item accent" hidden>
+            <span class="menu-icon">⬇</span>
+            <div>
+              <strong>Pasang di Android</strong>
+              <small id="installAppLabel">Install Geopatok V3 ke layar utama</small>
+            </div>
+          </button>
           <button type="button" id="btnImport" class="menu-item">
             <span class="menu-icon">📂</span>
             <div>
@@ -294,6 +314,38 @@
       </div>
     </div>
 
+    <!-- Mark IDs sheet -->
+    <div id="markSheet" class="sheet" hidden>
+      <div class="sheet-backdrop" data-close="markSheet"></div>
+      <div class="sheet-panel" role="dialog" aria-label="Tandai ID peta">
+        <div class="sheet-handle"></div>
+        <h2>Tandai ID peta</h2>
+        <p class="hint">
+          Masukkan satu atau banyak ID bidang. ID yang ditandai berwarna
+          <strong style="color:#fca5a5">merah gelap</strong> secara permanen
+          (tersimpan di perangkat). Kirim lagi ID yang sama untuk
+          <strong>menghapus</strong> tanda.
+        </p>
+        <label class="field">
+          <span>ID bidang (pisahkan spasi, koma, atau baris baru)</span>
+          <textarea
+            id="markIdsInput"
+            rows="4"
+            placeholder="AA00021551-1&#10;AC00020799-1, AC00020799-2"
+            autocapitalize="characters"
+            spellcheck="false"
+          ></textarea>
+        </label>
+        <button type="button" id="btnMarkToggle" class="btn-block primary">Tandai / hapus tanda</button>
+        <button type="button" id="btnMarkOnly" class="btn-block" style="margin-top:8px">Tandai saja (jangan hapus)</button>
+        <button type="button" id="btnUnmarkOnly" class="btn-block outline" style="margin-top:8px">Hapus tanda saja</button>
+        <div id="markActionResult" class="import-result" hidden style="margin-top:12px"></div>
+        <h3 class="section-title">ID tertandai (<span id="markCount">0</span>)</h3>
+        <div id="markedIdsList" class="marked-ids-list"></div>
+        <button type="button" id="btnClearAllMarks" class="btn-block danger-outline" style="margin-top:12px">Hapus semua tanda</button>
+      </div>
+    </div>
+
     <!-- Import / Load GeoJSON sheet -->
     <div id="importSheet" class="sheet" hidden>
       <div class="sheet-backdrop" data-close="importSheet"></div>
@@ -352,7 +404,9 @@
           <li>Pakai <strong>Muat GeoJSON</strong> untuk membuka kembali file yang sudah diunduh atau dari QGIS/app lain.</li>
           <li><strong>Muat data BSRE</strong> menampilkan dataset POLSH BSRE 1119 (1.212 bidang). Ketuk bidang → Edit di Geopatok.</li>
           <li>Setelah BSRE dimuat, pakai kotak <strong>Cari ID</strong> (atau menu Cari bidang BSRE) untuk menemukan poligon by ID.</li>
+          <li><strong>Tandai ID peta</strong>: input satu/banyak ID → poligon jadi merah gelap permanen. Input ID yang sama lagi untuk menghapus tanda.</li>
           <li>Ketuk poligon → <strong>Set as destination</strong> untuk rute dari lokasi GPS Anda ke lahan tersebut (jalan/mobil via OSRM).</li>
+          <li><strong>Pasang di Android:</strong> buka lewat <em>Chrome</em> (HTTPS) → menu ⋮ → <strong>Install app</strong> / <strong>Tambahkan ke layar utama</strong>, atau tombol Pasang di menu aplikasi.</li>
         </ol>
         <h3 class="section-title">Tips akurasi</h3>
         <ul class="help-list bullets">
@@ -367,6 +421,18 @@
       </div>
     </div>
 
+    <!-- Install banner (Android Chrome) -->
+    <div id="installBanner" class="install-banner" hidden>
+      <div class="install-banner-text">
+        <strong>Pasang Geopatok V3</strong>
+        <span>Tambahkan ke layar utama — pakai seperti aplikasi Android</span>
+      </div>
+      <div class="install-banner-actions">
+        <button type="button" id="btnInstallNow" class="install-btn primary">Pasang</button>
+        <button type="button" id="btnInstallLater" class="install-btn">Nanti</button>
+      </div>
+    </div>
+
     <!-- Toast -->
     <div id="toast" class="toast" hidden role="status" aria-live="polite"></div>
 
@@ -375,6 +441,6 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-  <script src="app.js?v=3d"></script>
+  <script src="app.js?v=3f"></script>
 </body>
 </html>
