@@ -119,6 +119,9 @@
     markedIdsList: $("markedIdsList"),
     markCount: $("markCount"),
     markActionResult: $("markActionResult"),
+    btnLocateRed: $("btnLocateRed"),
+    btnLocateRedSheet: $("btnLocateRedSheet"),
+    locateRedCount: $("locateRedCount"),
     btnInstallApp: $("btnInstallApp"),
     installAppLabel: $("installAppLabel"),
     installBanner: $("installBanner"),
@@ -289,6 +292,10 @@
   let markedIds = new Set();
   let bsreHighlightLayer = null;
   let bsreSearchTimer = null;
+  /** Radar ping layer over marked polygons */
+  const radarLayer = L.layerGroup().addTo(map);
+  let radarActive = false;
+  let radarTimer = null;
   let routeState = {
     active: false,
     loading: false,
@@ -1362,6 +1369,7 @@
     bsreLayerIndex = {};
     bsreIdIndex = {};
     clearBsreHighlight();
+    clearRadar();
     hideBsreSearchUI();
     updateBsreLabel();
     updateBsreSearchMenu();
@@ -1441,6 +1449,194 @@
           : "Tanda merah gelap permanen (multi-ID)";
     }
     if (els.markCount) els.markCount.textContent = String(n);
+    updateLocateRedButton();
+  }
+
+  function updateLocateRedButton() {
+    const n = markedIds.size;
+    if (els.locateRedCount) els.locateRedCount.textContent = String(n);
+    if (els.btnLocateRed) {
+      // Show when there is at least one mark (works even before BSRE load)
+      els.btnLocateRed.hidden = n === 0;
+      els.btnLocateRed.classList.toggle("active", radarActive);
+    }
+  }
+
+  function clearRadar() {
+    radarLayer.clearLayers();
+    radarActive = false;
+    if (radarTimer) {
+      clearTimeout(radarTimer);
+      radarTimer = null;
+    }
+    if (els.btnLocateRed) els.btnLocateRed.classList.remove("active");
+  }
+
+  function getMarkedFeatureEntries() {
+    const entries = [];
+    markedIds.forEach((id) => {
+      const key = normalizeIdKey(id);
+      const idxs = bsreIdIndex[key] || [];
+      if (!idxs.length) return;
+      idxs.forEach((idx) => {
+        const f = bsreFeatures[idx];
+        if (f) entries.push({ id, idx, f });
+      });
+    });
+    return entries;
+  }
+
+  function addRadarAt(latlng, idLabel) {
+    // Animated CSS blip (visible at any zoom)
+    const icon = L.divIcon({
+      className: "radar-blip",
+      html:
+        '<div class="radar-blip-inner">' +
+        '<span class="radar-blip-wave"></span>' +
+        '<span class="radar-blip-wave delay"></span>' +
+        '<span class="radar-blip-core"></span>' +
+        (idLabel
+          ? '<span class="radar-blip-label">' +
+            escapeHtml(String(idLabel)) +
+            "</span>"
+          : "") +
+        "</div>",
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+    });
+    L.marker(latlng, {
+      icon,
+      interactive: false,
+      zIndexOffset: 1200,
+      keyboard: false,
+    }).addTo(radarLayer);
+
+    // Expanding geographic rings (helps when zoomed out — scales with map)
+    const baseRadius = 40; // meters
+    [1, 2.4, 4.2].forEach((mult, i) => {
+      const c = L.circle(latlng, {
+        radius: baseRadius * mult,
+        className: "radar-circle-wave",
+        color: "#ef4444",
+        weight: 2,
+        fillColor: "#ef4444",
+        fillOpacity: 0.06,
+        opacity: 0.55 - i * 0.12,
+        interactive: false,
+      }).addTo(radarLayer);
+      // pulse radius a few times
+      let step = 0;
+      const maxSteps = 8;
+      const iv = setInterval(() => {
+        step++;
+        try {
+          c.setRadius(baseRadius * mult * (1 + step * 0.35));
+          c.setStyle({
+            opacity: Math.max(0.05, 0.55 - i * 0.12 - step * 0.06),
+            fillOpacity: Math.max(0.01, 0.08 - step * 0.008),
+          });
+        } catch (_) {}
+        if (step >= maxSteps) clearInterval(iv);
+      }, 280);
+    });
+  }
+
+  /**
+   * Locate Red: fit map to all dark-red marked parcels and show radar pings.
+   */
+  function locateRedMarks() {
+    if (!markedIds.size) {
+      toast("Belum ada ID tertandai merah", true);
+      openMarkSheet();
+      return;
+    }
+
+    if (!bsreLoaded) {
+      toast("Muat data BSRE dulu agar tanda merah tampil di peta", true);
+      return;
+    }
+
+    const entries = getMarkedFeatureEntries();
+    if (!entries.length) {
+      toast(
+        "ID tertandai tidak ada di data BSRE yang dimuat (" +
+          markedIds.size +
+          " tersimpan)",
+        true
+      );
+      openMarkSheet();
+      return;
+    }
+
+    clearRadar();
+    radarActive = true;
+    if (els.btnLocateRed) els.btnLocateRed.classList.add("active");
+
+    const boundsPts = [];
+    const seenIdx = new Set();
+
+    entries.forEach(({ id, idx, f }) => {
+      if (seenIdx.has(idx)) return;
+      seenIdx.add(idx);
+
+      // Ensure polygon style is marked + on top
+      applyMarkStyleToLayers(id, true);
+
+      const b = getFeatureBounds(f);
+      if (b && b.isValid()) {
+        boundsPts.push(b.getSouthWest(), b.getNorthEast());
+        const center = b.getCenter();
+        addRadarAt([center.lat, center.lng], id);
+      } else {
+        // fallback centroid from ring
+        const g = f.geometry;
+        const ring =
+          g.type === "Polygon"
+            ? g.coordinates[0]
+            : g.type === "MultiPolygon"
+              ? g.coordinates[0][0]
+              : null;
+        if (ring && ring.length) {
+          const pts = ringToLatLngs(ring);
+          const c = centroid(pts);
+          if (c) {
+            boundsPts.push([c.lat, c.lng]);
+            addRadarAt([c.lat, c.lng], id);
+          }
+        }
+      }
+    });
+
+    if (boundsPts.length) {
+      try {
+        const b = L.latLngBounds(boundsPts);
+        map.fitBounds(b, {
+          padding: [50, 50],
+          maxZoom: entries.length === 1 ? 17 : 15,
+          animate: true,
+        });
+      } catch (_) {}
+    }
+
+    const n = seenIdx.size;
+    setStatus("Locate Red · " + n + " tanda");
+    toast(
+      "Radar aktif: " +
+        n +
+        " bidang merah" +
+        (markedIds.size > n ? " (" + markedIds.size + " ID tersimpan)" : "")
+    );
+
+    // Auto-stop radar animation after 20s (marks stay red)
+    if (radarTimer) clearTimeout(radarTimer);
+    radarTimer = setTimeout(() => {
+      clearRadar();
+      setStatus(
+        bsreLoaded
+          ? "BSRE · " + bsreFeatureCount.toLocaleString("id-ID") + " bidang"
+          : "Siap memetakan"
+      );
+    }, 20000);
   }
 
   function styleForId(id) {
@@ -1699,6 +1895,7 @@
     const all = Array.from(markedIds);
     markedIds.clear();
     all.forEach((id) => applyMarkStyleToLayers(id, false));
+    clearRadar();
     saveMarkedIds();
     renderMarkedIdsList();
     toast("Semua tanda dihapus");
@@ -2983,6 +3180,22 @@
     }
     if (els.btnClearAllMarks) {
       els.btnClearAllMarks.addEventListener("click", () => clearAllMarks());
+    }
+    if (els.btnLocateRed) {
+      els.btnLocateRed.addEventListener("click", () => {
+        if (radarActive) {
+          clearRadar();
+          toast("Radar dimatikan");
+          return;
+        }
+        locateRedMarks();
+      });
+    }
+    if (els.btnLocateRedSheet) {
+      els.btnLocateRedSheet.addEventListener("click", () => {
+        closeSheet("markSheet");
+        locateRedMarks();
+      });
     }
 
     if (els.bsreSearchForm) {

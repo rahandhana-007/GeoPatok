@@ -1,5 +1,5 @@
 /* Geopatok V3 - By AR — PWA service worker (network-first app shell) */
-const CACHE = "geopatok-v3f";
+const CACHE = "geopatok-v3g";
 const ASSETS = [
   "./",
   "./index.html",
