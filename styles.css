@@ -772,11 +772,14 @@ body {
   border-color: rgba(239, 68, 68, 0.35);
 }
 
-/* ===== Locate Red floating button ===== */
+/* ===== Locate Red floating button =====
+   Default: bottom-left, clear of zoom controls (top-left) and route bar (full bottom).
+   Raised automatically when route bar / install banner is visible. */
 .locate-red-btn {
   position: absolute;
-  right: 12px;
-  bottom: calc(var(--toolbar-h) + var(--safe-b) + 18px);
+  left: 12px;
+  right: auto;
+  bottom: calc(var(--toolbar-h) + var(--safe-b) + 14px);
   z-index: 470;
   display: flex;
   align-items: center;
@@ -793,6 +796,8 @@ body {
   cursor: pointer;
   box-shadow: 0 10px 28px rgba(127, 29, 29, 0.45);
   backdrop-filter: blur(10px);
+  transition: bottom 0.2s ease, left 0.2s ease;
+  max-width: calc(100vw - 24px);
 }
 
 .locate-red-btn[hidden] {
@@ -806,6 +811,29 @@ body {
 .locate-red-btn.active {
   border-color: #f87171;
   box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.25), 0 10px 28px rgba(127, 29, 29, 0.5);
+}
+
+/* Route bar occupies full bottom width — lift Locate Red above it */
+#app.route-on .locate-red-btn {
+  bottom: calc(var(--toolbar-h) + var(--safe-b) + 118px);
+}
+
+/* Install banner also sits on bottom */
+#app.install-on .locate-red-btn {
+  bottom: calc(var(--toolbar-h) + var(--safe-b) + 118px);
+}
+
+#app.route-on.install-on .locate-red-btn {
+  bottom: calc(var(--toolbar-h) + var(--safe-b) + 200px);
+}
+
+/* Toast should sit above locate-red when no route bar */
+#app:not(.route-on) .toast {
+  bottom: calc(var(--toolbar-h) + var(--safe-b) + 64px);
+}
+
+#app.route-on .toast {
+  bottom: calc(var(--toolbar-h) + var(--safe-b) + 130px);
 }
 
 .locate-red-radar {
@@ -1093,13 +1121,13 @@ body {
   cursor: not-allowed;
 }
 
-/* Route bar */
+/* Route bar — full width above toolbar; Locate Red moves up via #app.route-on */
 .route-bar {
   position: absolute;
   left: 12px;
   right: 12px;
   bottom: calc(var(--toolbar-h) + var(--safe-b) + 12px);
-  z-index: 450;
+  z-index: 455;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1109,6 +1137,7 @@ body {
   border: 1px solid rgba(59, 130, 246, 0.45);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(10px);
+  pointer-events: auto;
 }
 
 .route-bar[hidden] {

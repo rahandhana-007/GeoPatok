@@ -160,8 +160,10 @@
 
   function showInstallBannerIfNeeded() {
     if (!els.installBanner) return;
+    const appEl = document.getElementById("app");
     if (isStandalonePwa()) {
       els.installBanner.hidden = true;
+      if (appEl) appEl.classList.remove("install-on");
       return;
     }
     if (!deferredInstallPrompt) return;
@@ -169,6 +171,7 @@
       if (localStorage.getItem(INSTALL_DISMISS_KEY) === "1") return;
     } catch (_) {}
     els.installBanner.hidden = false;
+    if (appEl) appEl.classList.add("install-on");
   }
 
   async function triggerInstall() {
@@ -214,6 +217,8 @@
     window.addEventListener("appinstalled", () => {
       deferredInstallPrompt = null;
       if (els.installBanner) els.installBanner.hidden = true;
+      const appEl = document.getElementById("app");
+      if (appEl) appEl.classList.remove("install-on");
       updateInstallUI();
       toast("Berhasil dipasang di perangkat");
       setStatus("Geopatok V3 terpasang");
@@ -231,6 +236,8 @@
     if (els.btnInstallLater) {
       els.btnInstallLater.addEventListener("click", () => {
         if (els.installBanner) els.installBanner.hidden = true;
+        const appEl = document.getElementById("app");
+        if (appEl) appEl.classList.remove("install-on");
         try {
           localStorage.setItem(INSTALL_DISMISS_KEY, "1");
         } catch (_) {}
@@ -2246,11 +2253,14 @@
 
   function updateRouteBar() {
     if (!els.routeBar) return;
+    const appEl = document.getElementById("app");
     if (!routeState.active) {
       els.routeBar.hidden = true;
+      if (appEl) appEl.classList.remove("route-on");
       return;
     }
     els.routeBar.hidden = false;
+    if (appEl) appEl.classList.add("route-on");
     els.routeDestName.textContent = routeState.name || "Tujuan lahan";
     if (routeState.loading) {
       els.routeMeta.textContent = "Menghitung rute…";
@@ -2296,6 +2306,8 @@
       duration_s: null,
       provider: null,
     };
+    const appEl = document.getElementById("app");
+    if (appEl) appEl.classList.remove("route-on");
     updateRouteBar();
   }
 
