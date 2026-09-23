@@ -1,5 +1,5 @@
 /* Geopatok V3 - By AR — offline PWA + map tile cache */
-const APP_CACHE = "geopatok-app-v4d";
+const APP_CACHE = "geopatok-app-v4e";
 const TILE_CACHE = "geopatok-tiles-v4";
 const DATA_CACHE = "geopatok-data-v4";
 

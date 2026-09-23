@@ -17,7 +17,7 @@
   <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png" />
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
-  <link rel="stylesheet" href="styles.css?v=4d" />
+  <link rel="stylesheet" href="styles.css?v=4e" />
 </head>
 <body>
   <div id="app">
@@ -56,11 +56,13 @@
         <div class="coord-bar-text">
           <strong id="coordBarTitle">Koordinat</strong>
           <span id="coordBarValue">Ketuk peta untuk ambil titik</span>
+          <span id="coordBarDistance" class="coord-distance">Jarak dari lokasi saya: —</span>
         </div>
       </div>
       <div class="coord-bar-actions">
-        <button type="button" id="btnCoordCopy" class="coord-chip primary" title="Salin">Salin</button>
+        <button type="button" id="btnCoordCopy" class="coord-chip primary" title="Salin koordinat">Salin</button>
         <button type="button" id="btnCoordCopyDMS" class="coord-chip" title="Salin DMS">DMS</button>
+        <button type="button" id="btnCoordCopyDist" class="coord-chip" title="Salin jarak meter">Meter</button>
         <button type="button" id="btnCoordPaste" class="coord-chip" title="Tempel dari clipboard">Tempel</button>
         <button type="button" id="btnCoordClear" class="coord-chip danger" title="Tutup">✕</button>
       </div>
@@ -167,7 +169,7 @@
             <span class="menu-icon">📍</span>
             <div>
               <strong>Mode one-tap koordinat</strong>
-              <small id="coordModeLabel">Nonaktif — ketuk peta, salin lat,lng</small>
+              <small id="coordModeLabel">Nonaktif — ketuk peta, salin lat,lng + jarak m</small>
             </div>
           </button>
           <button type="button" id="btnWalkMode" class="menu-item">
@@ -557,6 +559,6 @@
   </div>
 
   <script src="vendor/leaflet/leaflet.js"></script>
-  <script src="app.js?v=4d"></script>
+  <script src="app.js?v=4e"></script>
 </body>
 </html>

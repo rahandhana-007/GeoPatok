@@ -1848,3 +1848,32 @@ body {
   border-color: rgba(251, 191, 36, 0.55);
   background: rgba(251, 191, 36, 0.12);
 }
+
+
+.coord-distance {
+  display: block !important;
+  margin-top: 6px !important;
+  font-size: 0.78rem !important;
+  font-weight: 800 !important;
+  color: #7dd3fc !important;
+  letter-spacing: 0.01em;
+}
+
+.coord-measure-marker {
+  background: transparent !important;
+  border: none !important;
+}
+
+.coord-measure-label {
+  transform: translate(-50%, -50%);
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: rgba(7, 89, 133, 0.92);
+  border: 1px solid rgba(125, 211, 252, 0.55);
+  color: #e0f2fe;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}

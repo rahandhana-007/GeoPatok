@@ -101,9 +101,11 @@
     coordBar: $("coordBar"),
     coordBarTitle: $("coordBarTitle"),
     coordBarValue: $("coordBarValue"),
+    coordBarDistance: $("coordBarDistance"),
     coordBarTextarea: $("coordBarTextarea"),
     btnCoordCopy: $("btnCoordCopy"),
     btnCoordCopyDMS: $("btnCoordCopyDMS"),
+    btnCoordCopyDist: $("btnCoordCopyDist"),
     btnCoordPaste: $("btnCoordPaste"),
     btnCoordClear: $("btnCoordClear"),
     btnCoordMode: $("btnCoordMode"),
@@ -329,7 +331,9 @@
   let destMarker = null;
   let routeLine = null;
   let coordMarker = null;
-  let lastCoordTap = null; // {lat,lng,text,textDms}
+  let coordMeasureLine = null;
+  let coordMeasureLabel = null;
+  let lastCoordTap = null; // {lat,lng,text,textDms,distance_m}
   let bsreLoaded = false;
   let bsreLoading = false;
   let bsreFeatureCount = 0;
@@ -819,6 +823,7 @@
       accuracyCircle.setRadius(accuracy);
     }
     updateGpsUi(pos);
+    if (lastCoordTap) updateCoordDistanceDisplay();
   }
 
   function geoOptions() {
@@ -1164,11 +1169,106 @@
     return toDms(lat, true) + ", " + toDms(lng, false);
   }
 
+
+  function formatMeters(m) {
+    if (m == null || !isFinite(m) || m < 0) return "—";
+    if (m < 10) return m.toFixed(1) + " m";
+    if (m < 1000) return Math.round(m) + " m";
+    // still show meters as primary unit requested, with km helper
+    return Math.round(m).toLocaleString("id-ID") + " m (" + (m / 1000).toFixed(2) + " km)";
+  }
+
+  function updateCoordDistanceDisplay() {
+    if (!els.coordBarDistance) return;
+    if (!lastCoordTap) {
+      els.coordBarDistance.textContent = "Jarak dari lokasi saya: —";
+      return;
+    }
+    const me = getUserLatLng();
+    if (!me) {
+      lastCoordTap.distance_m = null;
+      els.coordBarDistance.textContent =
+        "Jarak dari lokasi saya: GPS belum siap";
+      clearCoordMeasureGraphics(false);
+      return;
+    }
+    const d = haversine(me, { lat: lastCoordTap.lat, lng: lastCoordTap.lng });
+    lastCoordTap.distance_m = d;
+    els.coordBarDistance.textContent =
+      "Jarak dari lokasi saya: " + formatMeters(d);
+    drawCoordMeasure(me, lastCoordTap, d);
+  }
+
+  function clearCoordMeasureGraphics(removeOnlyLine) {
+    if (coordMeasureLine) {
+      try {
+        map.removeLayer(coordMeasureLine);
+      } catch (_) {}
+      coordMeasureLine = null;
+    }
+    if (coordMeasureLabel) {
+      try {
+        map.removeLayer(coordMeasureLabel);
+      } catch (_) {}
+      coordMeasureLabel = null;
+    }
+  }
+
+  function drawCoordMeasure(from, to, distanceM) {
+    const latlngs = [
+      [from.lat, from.lng],
+      [to.lat, to.lng],
+    ];
+    if (!coordMeasureLine) {
+      coordMeasureLine = L.polyline(latlngs, {
+        color: "#38bdf8",
+        weight: 3,
+        dashArray: "8 8",
+        opacity: 0.95,
+        interactive: false,
+      }).addTo(map);
+    } else {
+      coordMeasureLine.setLatLngs(latlngs);
+      if (!map.hasLayer(coordMeasureLine)) coordMeasureLine.addTo(map);
+    }
+
+    const mid = {
+      lat: (from.lat + to.lat) / 2,
+      lng: (from.lng + to.lng) / 2,
+    };
+    const labelHtml =
+      '<div class="coord-measure-label">' +
+      escapeHtml(formatMeters(distanceM)) +
+      "</div>";
+    if (!coordMeasureLabel) {
+      coordMeasureLabel = L.marker([mid.lat, mid.lng], {
+        icon: L.divIcon({
+          className: "coord-measure-marker",
+          html: labelHtml,
+          iconSize: null,
+        }),
+        interactive: false,
+        zIndexOffset: 1150,
+        keyboard: false,
+      }).addTo(map);
+    } else {
+      coordMeasureLabel.setLatLng([mid.lat, mid.lng]);
+      coordMeasureLabel.setIcon(
+        L.divIcon({
+          className: "coord-measure-marker",
+          html: labelHtml,
+          iconSize: null,
+        })
+      );
+      if (!map.hasLayer(coordMeasureLabel)) coordMeasureLabel.addTo(map);
+    }
+  }
+
   function updateCoordModeLabel() {
     if (!els.coordModeLabel) return;
     els.coordModeLabel.textContent = state.coordMode
-      ? "AKTIF — ketuk peta, lalu Salin / Tempel"
-      : "Nonaktif — ketuk peta, salin lat,lng";
+      ? "AKTIF — ketuk peta: koordinat + jarak (m)"
+      : "Nonaktif — ketuk peta, salin lat,lng + jarak m";
     if (els.btnCoordMode) {
       els.btnCoordMode.classList.toggle("active", !!state.coordMode);
     }
@@ -1213,7 +1313,12 @@
       coordMarker.setLatLng([lat, lng]);
       if (!map.hasLayer(coordMarker)) coordMarker.addTo(map);
     }
-    setStatus("Koordinat · " + lastCoordTap.text);
+    updateCoordDistanceDisplay();
+    const distTxt =
+      lastCoordTap.distance_m != null
+        ? " · " + formatMeters(lastCoordTap.distance_m)
+        : "";
+    setStatus("Koordinat · " + lastCoordTap.text + distTxt);
   }
 
   function hideCoordBar(clearMarker) {
@@ -1224,7 +1329,11 @@
       } catch (_) {}
       coordMarker = null;
     }
+    clearCoordMeasureGraphics(true);
     lastCoordTap = null;
+    if (els.coordBarDistance) {
+      els.coordBarDistance.textContent = "Jarak dari lokasi saya: —";
+    }
   }
 
   async function copyText(text, label) {
@@ -1302,7 +1411,18 @@
 
   function onCoordMapClick(latlng) {
     showCoordBar(latlng.lat, latlng.lng);
-    copyText(formatCoordPair(latlng.lat, latlng.lng, 6), "Disimpan & disalin");
+    const pair = formatCoordPair(latlng.lat, latlng.lng, 6);
+    const d = lastCoordTap && lastCoordTap.distance_m != null
+      ? lastCoordTap.distance_m
+      : null;
+    const msg =
+      d != null
+        ? "Disalin · " + formatMeters(d)
+        : "Disimpan & disalin";
+    copyText(
+      d != null ? pair + " | " + Math.round(d) + " m dari lokasi saya" : pair,
+      msg
+    );
   }
 
   function setCoordMode(on, silent) {
@@ -3874,6 +3994,26 @@
         copyText(lastCoordTap.textDms, "DMS disalin");
         if (els.coordBarTextarea) {
           els.coordBarTextarea.value = lastCoordTap.textDms;
+          els.coordBarTextarea.hidden = false;
+        }
+      });
+    }
+    if (els.btnCoordCopyDist) {
+      els.btnCoordCopyDist.addEventListener("click", () => {
+        if (!lastCoordTap) return toast("Ketuk peta dulu", true);
+        updateCoordDistanceDisplay();
+        if (lastCoordTap.distance_m == null) {
+          return toast("GPS belum siap — tekan Lokasi dulu", true);
+        }
+        const mtr = lastCoordTap.distance_m;
+        const txt =
+          (Math.round(mtr * 10) / 10) +
+          " m (dari lokasi saya ke " +
+          lastCoordTap.text +
+          ")";
+        copyText(txt, "Jarak disalin");
+        if (els.coordBarTextarea) {
+          els.coordBarTextarea.value = txt;
           els.coordBarTextarea.hidden = false;
         }
       });
