@@ -16,8 +16,8 @@
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png" />
   <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png" />
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
-  <link rel="stylesheet" href="styles.css?v=3h" />
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
+  <link rel="stylesheet" href="styles.css?v=4d" />
 </head>
 <body>
   <div id="app">
@@ -44,6 +44,27 @@
     <div id="gpsBadge" class="gps-badge" hidden>
       <span class="gps-dot" id="gpsDot"></span>
       <span id="gpsLabel">GPS —</span>
+    </div>
+
+    <!-- Offline indicator -->
+    <div id="offlineBadge" class="offline-badge" hidden>OFFLINE</div>
+
+    <!-- One-tap coordinate bar -->
+    <div id="coordBar" class="coord-bar" hidden>
+      <div class="coord-bar-main">
+        <div class="coord-bar-icon" aria-hidden="true">📍</div>
+        <div class="coord-bar-text">
+          <strong id="coordBarTitle">Koordinat</strong>
+          <span id="coordBarValue">Ketuk peta untuk ambil titik</span>
+        </div>
+      </div>
+      <div class="coord-bar-actions">
+        <button type="button" id="btnCoordCopy" class="coord-chip primary" title="Salin">Salin</button>
+        <button type="button" id="btnCoordCopyDMS" class="coord-chip" title="Salin DMS">DMS</button>
+        <button type="button" id="btnCoordPaste" class="coord-chip" title="Tempel dari clipboard">Tempel</button>
+        <button type="button" id="btnCoordClear" class="coord-chip danger" title="Tutup">✕</button>
+      </div>
+      <textarea id="coordBarTextarea" class="coord-bar-textarea" rows="2" readonly hidden></textarea>
     </div>
 
     <!-- Locate marked (red) parcels — radar ping -->
@@ -142,6 +163,13 @@
               <small id="tapModeLabel">Nonaktif — ketuk peta untuk menambah titik</small>
             </div>
           </button>
+          <button type="button" id="btnCoordMode" class="menu-item">
+            <span class="menu-icon">📍</span>
+            <div>
+              <strong>Mode one-tap koordinat</strong>
+              <small id="coordModeLabel">Nonaktif — ketuk peta, salin lat,lng</small>
+            </div>
+          </button>
           <button type="button" id="btnWalkMode" class="menu-item">
             <span class="menu-icon">🚶</span>
             <div>
@@ -198,6 +226,13 @@
               <small id="markIdsMenuLabel">Tanda merah gelap permanen (multi-ID)</small>
             </div>
           </button>
+          <button type="button" id="btnOfflineMaps" class="menu-item accent">
+            <span class="menu-icon">📥</span>
+            <div>
+              <strong>Peta offline</strong>
+              <small id="offlineMapsMenuLabel">Unduh ubin peta area ini</small>
+            </div>
+          </button>
           <button type="button" id="btnInstallApp" class="menu-item accent" hidden>
             <span class="menu-icon">⬇</span>
             <div>
@@ -243,6 +278,9 @@
             <span>Topografi</span>
           </label>
         </div>
+
+        
+
         <h3 class="section-title">Akurasi GPS</h3>
         <label class="field">
           <span>Ambang akurasi maksimal (meter)</span>
@@ -258,6 +296,74 @@
           <input type="checkbox" id="highAccuracy" checked />
           <span>Paksa high-accuracy GPS (disarankan)</span>
         </label>
+        <h3 class="section-title">Mode offline</h3>
+        <button type="button" id="btnOfflineMapsFromLayers" class="btn-block primary">Unduh peta area saat ini</button>
+        <p class="hint" style="margin-top:8px;margin-bottom:0">Ubin tersimpan di perangkat. Bisa dipakai tanpa internet (OSM disarankan untuk offline).</p>
+      </div>
+    </div>
+
+    <!-- Offline maps sheet -->
+    <div id="offlineSheet" class="sheet" hidden>
+      <div class="sheet-backdrop" data-close="offlineSheet"></div>
+      <div class="sheet-panel" role="dialog" aria-label="Peta offline">
+        <div class="sheet-handle"></div>
+        <h2>Peta offline</h2>
+        <p class="hint">
+          Unduh ubin peta untuk area yang sedang tampil. Setelah selesai, buka app
+          tanpa internet — peta, BSRE (jika pernah dimuat), dan lahan tersimpan tetap jalan.
+          <strong>Rute OSRM butuh internet.</strong>
+        </p>
+
+        <div id="offlineStatusCard" class="offline-status-card">
+          <div class="offline-status-row">
+            <span>Koneksi</span>
+            <strong id="offlineNetLabel">—</strong>
+          </div>
+          <div class="offline-status-row">
+            <span>Ubin tersimpan</span>
+            <strong id="offlineTileCount">—</strong>
+          </div>
+          <div class="offline-status-row">
+            <span>Paket area</span>
+            <strong id="offlinePackCount">0</strong>
+          </div>
+        </div>
+
+        <h3 class="section-title">Unduh area peta saat ini</h3>
+        <label class="field">
+          <span>Nama paket</span>
+          <input type="text" id="offlinePackName" placeholder="contoh: Kebun Kisaran" maxlength="80" />
+        </label>
+        <label class="field">
+          <span>Lapisan</span>
+          <select id="offlineBasemap">
+            <option value="osm">OpenStreetMap (disarankan offline)</option>
+            <option value="satellite">Satelit Esri</option>
+            <option value="topo">Topografi</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Zoom minimal</span>
+          <input type="number" id="offlineZmin" min="10" max="18" value="13" />
+        </label>
+        <label class="field">
+          <span>Zoom maksimal</span>
+          <input type="number" id="offlineZmax" min="10" max="18" value="16" />
+          <small>Makin tinggi zoom = lebih detail, file lebih besar. Max ~2.500 ubin/unduh.</small>
+        </label>
+
+        <div id="offlineEstimate" class="offline-estimate">Perkiraan: — ubin</div>
+        <div id="offlineProgressWrap" class="offline-progress-wrap" hidden>
+          <div class="offline-progress-bar"><div id="offlineProgressBar" class="offline-progress-fill"></div></div>
+          <div id="offlineProgressText" class="offline-progress-text">0%</div>
+        </div>
+
+        <button type="button" id="btnStartOfflineDownload" class="btn-block primary">Mulai unduh peta</button>
+        <button type="button" id="btnCancelOfflineDownload" class="btn-block outline" style="margin-top:8px" hidden>Batalkan</button>
+
+        <h3 class="section-title">Paket tersimpan</h3>
+        <div id="offlinePackList" class="offline-pack-list"></div>
+        <button type="button" id="btnClearTileCache" class="btn-block danger-outline" style="margin-top:12px">Hapus semua ubin offline</button>
       </div>
     </div>
 
@@ -413,7 +519,8 @@
           <li><strong>Muat data BSRE</strong> menampilkan dataset POLSH BSRE 1119 (1.212 bidang). Ketuk bidang → Edit di Geopatok.</li>
           <li>Setelah BSRE dimuat, pakai kotak <strong>Cari ID</strong> (atau menu Cari bidang BSRE) untuk menemukan poligon by ID.</li>
           <li><strong>Tandai ID peta</strong>: input satu/banyak ID → poligon jadi merah gelap permanen. Input ID yang sama lagi untuk menghapus tanda.</li>
-          <li><strong>Locate Red</strong>: tombol radar di pojok kanan bawah — zoom ke semua tanda merah + sinyal radar agar mudah ditemukan saat zoom out. Ketuk lagi untuk mematikan.</li>
+          <li><strong>Locate Red</strong>: tombol radar — zoom ke semua tanda merah + sinyal radar. Ketuk lagi untuk mematikan.</li>
+          <li><strong>Peta offline</strong>: unduh ubin area yang tampil di peta (saat online). Setelah itu app + peta bisa dipakai tanpa internet. Pasang ke layar utama agar SW stabil.</li>
           <li>Ketuk poligon → <strong>Set as destination</strong> untuk rute dari lokasi GPS Anda ke lahan tersebut (jalan/mobil via OSRM).</li>
           <li><strong>Pasang di Android:</strong> buka lewat <em>Chrome</em> (HTTPS) → menu ⋮ → <strong>Install app</strong> / <strong>Tambahkan ke layar utama</strong>, atau tombol Pasang di menu aplikasi.</li>
         </ol>
@@ -449,7 +556,7 @@
     <input type="file" id="fileImport" accept=".geojson,.json,application/geo+json,application/json" hidden />
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-  <script src="app.js?v=3h"></script>
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="app.js?v=4d"></script>
 </body>
 </html>

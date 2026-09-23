@@ -10,10 +10,12 @@
   const STORAGE_KEY = "geopatok_parcels_v1";
   const SETTINGS_KEY = "geopatok_settings_v1";
   const MARKED_IDS_KEY = "geopatok_marked_ids_v1";
+  const OFFLINE_PACKS_KEY = "geopatok_offline_packs_v1";
   const APP_NAME = "Geopatok V3 - By AR";
   const APP_SHORT = "Geopatok V3";
   /** Saat Tutup: sederhanakan poligon ke N titik paling mewakili (jika lebih banyak) */
   const CLOSE_TARGET_POINTS = 8;
+  const OFFLINE_MAX_TILES = 2500;
   const MARK_STYLE = {
     color: "#7f1d1d",
     fillColor: "#991b1b",
@@ -33,6 +35,7 @@
     points: [], // [{lat, lng, accuracy, altitude, timestamp}]
     closed: false,
     tapMode: false,
+    coordMode: false,
     walkMode: false,
     walkTimer: null,
     watchId: null,
@@ -51,6 +54,7 @@
       basemap: "osm",
     },
   };
+
 
   // ---------- DOM ----------
   const $ = (id) => document.getElementById(id);
@@ -93,6 +97,16 @@
     parcelCountLabel: $("parcelCountLabel"),
     tapModeLabel: $("tapModeLabel"),
     walkModeLabel: $("walkModeLabel"),
+    coordModeLabel: $("coordModeLabel"),
+    coordBar: $("coordBar"),
+    coordBarTitle: $("coordBarTitle"),
+    coordBarValue: $("coordBarValue"),
+    coordBarTextarea: $("coordBarTextarea"),
+    btnCoordCopy: $("btnCoordCopy"),
+    btnCoordCopyDMS: $("btnCoordCopyDMS"),
+    btnCoordPaste: $("btnCoordPaste"),
+    btnCoordClear: $("btnCoordClear"),
+    btnCoordMode: $("btnCoordMode"),
     geojsonPreview: $("geojsonPreview"),
     routeBar: $("routeBar"),
     routeDestName: $("routeDestName"),
@@ -122,6 +136,26 @@
     btnLocateRed: $("btnLocateRed"),
     btnLocateRedSheet: $("btnLocateRedSheet"),
     locateRedCount: $("locateRedCount"),
+    offlineBadge: $("offlineBadge"),
+    btnOfflineMaps: $("btnOfflineMaps"),
+    offlineMapsMenuLabel: $("offlineMapsMenuLabel"),
+    offlineSheet: $("offlineSheet"),
+    offlineNetLabel: $("offlineNetLabel"),
+    offlineTileCount: $("offlineTileCount"),
+    offlinePackCount: $("offlinePackCount"),
+    offlinePackName: $("offlinePackName"),
+    offlineBasemap: $("offlineBasemap"),
+    offlineZmin: $("offlineZmin"),
+    offlineZmax: $("offlineZmax"),
+    offlineEstimate: $("offlineEstimate"),
+    offlineProgressWrap: $("offlineProgressWrap"),
+    offlineProgressBar: $("offlineProgressBar"),
+    offlineProgressText: $("offlineProgressText"),
+    btnStartOfflineDownload: $("btnStartOfflineDownload"),
+    btnCancelOfflineDownload: $("btnCancelOfflineDownload"),
+    offlinePackList: $("offlinePackList"),
+    btnClearTileCache: $("btnClearTileCache"),
+    btnOfflineMapsFromLayers: $("btnOfflineMapsFromLayers"),
     btnInstallApp: $("btnInstallApp"),
     installAppLabel: $("installAppLabel"),
     installBanner: $("installBanner"),
@@ -254,21 +288,29 @@
     maxZoom: 22,
   }).setView([3.5952, 98.6722], 15); // default Medan
 
+  const TILE_URLS = {
+    osm: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    // Avoid {s} subdomain randomness for deterministic offline caching
+    satellite:
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    topo: "https://tile.opentopomap.org/{z}/{x}/{y}.png",
+  };
+
   const basemaps = {
-    osm: L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    osm: L.tileLayer(TILE_URLS.osm, {
       maxZoom: 19,
       attribution: "&copy; OpenStreetMap",
+      crossOrigin: true,
     }),
-    satellite: L.tileLayer(
-      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-      {
-        maxZoom: 19,
-        attribution: "Tiles &copy; Esri",
-      }
-    ),
-    topo: L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
+    satellite: L.tileLayer(TILE_URLS.satellite, {
+      maxZoom: 19,
+      attribution: "Tiles &copy; Esri",
+      crossOrigin: true,
+    }),
+    topo: L.tileLayer(TILE_URLS.topo, {
       maxZoom: 17,
       attribution: "&copy; OpenTopoMap",
+      crossOrigin: true,
     }),
   };
 
@@ -286,6 +328,8 @@
   let polygon = null;
   let destMarker = null;
   let routeLine = null;
+  let coordMarker = null;
+  let lastCoordTap = null; // {lat,lng,text,textDms}
   let bsreLoaded = false;
   let bsreLoading = false;
   let bsreFeatureCount = 0;
@@ -359,6 +403,10 @@
       const raw = localStorage.getItem(SETTINGS_KEY);
       if (raw) Object.assign(state.settings, JSON.parse(raw));
     } catch (_) {}
+    // Force non-Google basemap (Google feature removed)
+    if (!state.settings.basemap || String(state.settings.basemap).startsWith("google")) {
+      state.settings.basemap = "osm";
+    }
     els.accuracyThreshold.value = state.settings.accuracyThreshold;
     els.walkInterval.value = state.settings.walkInterval;
     els.highAccuracy.checked = state.settings.highAccuracy;
@@ -366,7 +414,7 @@
       `input[name="basemap"][value="${state.settings.basemap}"]`
     );
     if (radio) radio.checked = true;
-    setBasemap(state.settings.basemap, false);
+    setBasemap(state.settings.basemap || "osm", false);
   }
 
   function saveSettings() {
@@ -721,14 +769,22 @@
 
   // ---------- GPS ----------
   function setBasemap(key, persist = true) {
-    Object.values(basemaps).forEach((l) => {
-      if (map.hasLayer(l)) map.removeLayer(l);
+    key = key || "osm";
+    if (String(key).startsWith("google")) key = "osm";
+    Object.keys(basemaps).forEach((k) => {
+      const l = basemaps[k];
+      if (l && map.hasLayer(l)) map.removeLayer(l);
     });
     const layer = basemaps[key] || basemaps.osm;
     layer.addTo(map);
-    state.settings.basemap = key;
+    state.settings.basemap = basemaps[key] ? key : "osm";
     if (persist) saveSettings();
+    const radio = document.querySelector(
+      `input[name="basemap"][value="${state.settings.basemap}"]`
+    );
+    if (radio) radio.checked = true;
   }
+
 
   function updateGpsUi(pos) {
     els.gpsBadge.hidden = false;
@@ -1077,6 +1133,196 @@
     els.walkModeLabel.textContent = state.walkMode
       ? `AKTIF · ${state.points.length} titik — tekan lagi untuk berhenti`
       : "Nonaktif — rekam banyak titik; Tutup = sederhanakan ke 8";
+  }
+
+
+  // ---------- One-tap coordinate mode ----------
+  function formatCoordPair(lat, lng, digits) {
+    digits = digits == null ? 6 : digits;
+    return Number(lat).toFixed(digits) + ", " + Number(lng).toFixed(digits);
+  }
+
+  function toDms(value, isLat) {
+    const hemi = isLat ? (value >= 0 ? "N" : "S") : value >= 0 ? "E" : "W";
+    const abs = Math.abs(value);
+    const deg = Math.floor(abs);
+    const minFloat = (abs - deg) * 60;
+    const min = Math.floor(minFloat);
+    const sec = (minFloat - min) * 60;
+    return (
+      deg +
+      "°" +
+      String(min).padStart(2, "0") +
+      "'" +
+      sec.toFixed(2) +
+      '"' +
+      hemi
+    );
+  }
+
+  function formatCoordDms(lat, lng) {
+    return toDms(lat, true) + ", " + toDms(lng, false);
+  }
+
+  function updateCoordModeLabel() {
+    if (!els.coordModeLabel) return;
+    els.coordModeLabel.textContent = state.coordMode
+      ? "AKTIF — ketuk peta, lalu Salin / Tempel"
+      : "Nonaktif — ketuk peta, salin lat,lng";
+    if (els.btnCoordMode) {
+      els.btnCoordMode.classList.toggle("active", !!state.coordMode);
+    }
+  }
+
+  function updateMapCursor() {
+    map.getContainer().style.cursor =
+      state.coordMode || state.tapMode ? "crosshair" : "";
+  }
+
+  function showCoordBar(lat, lng) {
+    lastCoordTap = {
+      lat: lat,
+      lng: lng,
+      text: formatCoordPair(lat, lng, 6),
+      textDms: formatCoordDms(lat, lng),
+    };
+    if (els.coordBar) els.coordBar.hidden = false;
+    if (els.coordBarTitle) els.coordBarTitle.textContent = "One-tap koordinat";
+    if (els.coordBarValue) els.coordBarValue.textContent = lastCoordTap.text;
+    if (els.coordBarTextarea) {
+      els.coordBarTextarea.value = lastCoordTap.text;
+      els.coordBarTextarea.hidden = false;
+    }
+    if (!coordMarker) {
+      coordMarker = L.marker([lat, lng], {
+        icon: L.divIcon({
+          className: "coord-tap-marker",
+          html: '<div class="coord-tap-pin"></div>',
+          iconSize: [18, 18],
+          iconAnchor: [9, 18],
+        }),
+        zIndexOffset: 1100,
+        draggable: true,
+      }).addTo(map);
+      coordMarker.on("dragend", (e) => {
+        const ll = e.target.getLatLng();
+        showCoordBar(ll.lat, ll.lng);
+        toast("Koordinat diperbarui");
+      });
+    } else {
+      coordMarker.setLatLng([lat, lng]);
+      if (!map.hasLayer(coordMarker)) coordMarker.addTo(map);
+    }
+    setStatus("Koordinat · " + lastCoordTap.text);
+  }
+
+  function hideCoordBar(clearMarker) {
+    if (els.coordBar) els.coordBar.hidden = true;
+    if (clearMarker && coordMarker) {
+      try {
+        map.removeLayer(coordMarker);
+      } catch (_) {}
+      coordMarker = null;
+    }
+    lastCoordTap = null;
+  }
+
+  async function copyText(text, label) {
+    if (!text) {
+      toast("Belum ada koordinat", true);
+      return false;
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      toast((label || "Disalin") + ": " + text);
+      return true;
+    } catch (e) {
+      if (els.coordBarTextarea) {
+        els.coordBarTextarea.hidden = false;
+        els.coordBarTextarea.value = text;
+        els.coordBarTextarea.focus();
+        els.coordBarTextarea.select();
+      }
+      toast("Gagal auto-salin — blok teks siap disalin manual", true);
+      return false;
+    }
+  }
+
+  function parseCoordText(raw) {
+    if (!raw) return null;
+    const s = String(raw).trim();
+    let m = s.match(/@(-?\d+\.?\d*),\s*(-?\d+\.?\d*)/);
+    if (m) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]) };
+    m = s.match(/[?&](?:q|query|ll)=(-?\d+\.?\d*),\s*(-?\d+\.?\d*)/i);
+    if (m) return { lat: parseFloat(m[1]), lng: parseFloat(m[2]) };
+    m = s.match(/(-?\d+\.?\d*)\s*[,;\s]\s*(-?\d+\.?\d*)/);
+    if (m) {
+      const a = parseFloat(m[1]);
+      const b = parseFloat(m[2]);
+      if (Math.abs(a) <= 90 && Math.abs(b) <= 180) return { lat: a, lng: b };
+      if (Math.abs(b) <= 90 && Math.abs(a) <= 180) return { lat: b, lng: a };
+    }
+    return null;
+  }
+
+  async function pasteCoordFromClipboard() {
+    let text = "";
+    try {
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        text = await navigator.clipboard.readText();
+      }
+    } catch (_) {}
+    if (!text) {
+      text = window.prompt("Tempel koordinat (lat, lng):", "") || "";
+    }
+    const parsed = parseCoordText(text);
+    if (!parsed) {
+      toast("Format tidak dikenali. Contoh: 3.595200, 98.672200", true);
+      return;
+    }
+    if (!state.coordMode) setCoordMode(true, true);
+    showCoordBar(parsed.lat, parsed.lng);
+    map.setView([parsed.lat, parsed.lng], Math.max(map.getZoom(), 17), {
+      animate: true,
+    });
+    await copyText(formatCoordPair(parsed.lat, parsed.lng, 6), "Tempel OK");
+  }
+
+  function onCoordMapClick(latlng) {
+    showCoordBar(latlng.lat, latlng.lng);
+    copyText(formatCoordPair(latlng.lat, latlng.lng, 6), "Disimpan & disalin");
+  }
+
+  function setCoordMode(on, silent) {
+    state.coordMode = !!on;
+    if (state.coordMode) {
+      if (state.tapMode) {
+        state.tapMode = false;
+        updateTapLabel();
+      }
+      if (els.coordBar) els.coordBar.hidden = false;
+      if (!lastCoordTap && els.coordBarValue) {
+        els.coordBarValue.textContent = "Ketuk peta untuk ambil titik";
+      }
+      if (!silent) toast("Mode one-tap koordinat AKTIF");
+      setStatus("One-tap koordinat");
+    } else if (!silent) {
+      toast("Mode one-tap koordinat nonaktif");
+    }
+    updateCoordModeLabel();
+    updateMapCursor();
   }
 
   function updateTapLabel() {
@@ -1477,6 +1723,495 @@
       radarTimer = null;
     }
     if (els.btnLocateRed) els.btnLocateRed.classList.remove("active");
+  }
+
+  // ---------- Offline maps (tile pack download) ----------
+  let offlinePacks = [];
+  let offlineDownload = {
+    active: false,
+    abort: false,
+    ok: 0,
+    fail: 0,
+    total: 0,
+  };
+
+  function loadOfflinePacks() {
+    try {
+      const raw = localStorage.getItem(OFFLINE_PACKS_KEY);
+      offlinePacks = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(offlinePacks)) offlinePacks = [];
+    } catch (_) {
+      offlinePacks = [];
+    }
+  }
+
+  function saveOfflinePacks() {
+    try {
+      localStorage.setItem(OFFLINE_PACKS_KEY, JSON.stringify(offlinePacks));
+    } catch (_) {}
+    updateOfflineMenuLabel();
+  }
+
+  function updateOfflineMenuLabel() {
+    if (els.offlineMapsMenuLabel) {
+      const n = offlinePacks.length;
+      els.offlineMapsMenuLabel.textContent =
+        n > 0
+          ? n + " paket area tersimpan di perangkat"
+          : "Unduh ubin peta area ini";
+    }
+    if (els.offlinePackCount) {
+      els.offlinePackCount.textContent = String(offlinePacks.length);
+    }
+  }
+
+  function updateOnlineBadge() {
+    const online = navigator.onLine;
+    if (els.offlineBadge) {
+      if (!online) {
+        els.offlineBadge.hidden = false;
+        els.offlineBadge.textContent = "OFFLINE";
+        els.offlineBadge.classList.remove("online-cached");
+      } else if (offlinePacks.length > 0) {
+        els.offlineBadge.hidden = false;
+        els.offlineBadge.textContent = "PETA OFFLINE SIAP";
+        els.offlineBadge.classList.add("online-cached");
+        // auto-hide the green tip after a few seconds when online
+        clearTimeout(updateOnlineBadge._t);
+        updateOnlineBadge._t = setTimeout(() => {
+          if (navigator.onLine && els.offlineBadge) els.offlineBadge.hidden = true;
+        }, 4000);
+      } else {
+        els.offlineBadge.hidden = true;
+      }
+    }
+    if (els.offlineNetLabel) {
+      els.offlineNetLabel.textContent = online ? "Online" : "Offline";
+      els.offlineNetLabel.style.color = online ? "#5eead4" : "#fca5a5";
+    }
+    if (!online) setStatus("Mode offline");
+  }
+
+  function lon2tile(lon, z) {
+    return Math.floor(((lon + 180) / 360) * Math.pow(2, z));
+  }
+  function lat2tile(lat, z) {
+    const rad = (lat * Math.PI) / 180;
+    return Math.floor(
+      ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) *
+        Math.pow(2, z)
+    );
+  }
+
+  function tileUrl(template, z, x, y) {
+    return template
+      .replace("{z}", z)
+      .replace("{x}", x)
+      .replace("{y}", y);
+  }
+
+  function buildTileList(bounds, zMin, zMax, template) {
+    const urls = [];
+    const west = bounds.getWest();
+    const east = bounds.getEast();
+    const south = bounds.getSouth();
+    const north = bounds.getNorth();
+    for (let z = zMin; z <= zMax; z++) {
+      const n = Math.pow(2, z);
+      let x0 = lon2tile(west, z);
+      let x1 = lon2tile(east, z);
+      let y0 = lat2tile(north, z);
+      let y1 = lat2tile(south, z);
+      x0 = Math.max(0, Math.min(n - 1, x0));
+      x1 = Math.max(0, Math.min(n - 1, x1));
+      y0 = Math.max(0, Math.min(n - 1, y0));
+      y1 = Math.max(0, Math.min(n - 1, y1));
+      if (x0 > x1) {
+        const t = x0;
+        x0 = x1;
+        x1 = t;
+      }
+      if (y0 > y1) {
+        const t = y0;
+        y0 = y1;
+        y1 = t;
+      }
+      for (let x = x0; x <= x1; x++) {
+        for (let y = y0; y <= y1; y++) {
+          urls.push(tileUrl(template, z, x, y));
+          if (urls.length > OFFLINE_MAX_TILES + 50) return urls;
+        }
+      }
+    }
+    return urls;
+  }
+
+  function estimateOfflineTiles() {
+    try {
+      const b = map.getBounds();
+      let zMin = parseInt(els.offlineZmin && els.offlineZmin.value, 10);
+      let zMax = parseInt(els.offlineZmax && els.offlineZmax.value, 10);
+      if (isNaN(zMin)) zMin = 13;
+      if (isNaN(zMax)) zMax = 16;
+      zMin = Math.max(10, Math.min(18, zMin));
+      zMax = Math.max(zMin, Math.min(18, zMax));
+      const key = (els.offlineBasemap && els.offlineBasemap.value) || "osm";
+      const tpl = TILE_URLS[key] || TILE_URLS.osm;
+      const urls = buildTileList(b, zMin, zMax, tpl);
+      const n = urls.length;
+      const over = n > OFFLINE_MAX_TILES;
+      const approxMb = ((n * 18) / 1024).toFixed(1); // ~18KB/tile rough
+      if (els.offlineEstimate) {
+        els.offlineEstimate.innerHTML = over
+          ? `Perkiraan: <strong style="color:#fca5a5">${n.toLocaleString(
+              "id-ID"
+            )} ubin</strong> (melebihi batas ${OFFLINE_MAX_TILES} — perkecil area / zoom max)`
+          : `Perkiraan: <strong>${n.toLocaleString(
+              "id-ID"
+            )} ubin</strong> · ~${approxMb} MB · zoom ${zMin}–${zMax}`;
+      }
+      return { n, over, urls, zMin, zMax, key, bounds: b };
+    } catch (e) {
+      if (els.offlineEstimate) els.offlineEstimate.textContent = "Perkiraan: —";
+      return null;
+    }
+  }
+
+  async function requestCacheStats() {
+    if (!navigator.serviceWorker || !navigator.serviceWorker.controller) {
+      if (els.offlineTileCount) els.offlineTileCount.textContent = "SW belum aktif";
+      return;
+    }
+    try {
+      navigator.serviceWorker.controller.postMessage({ type: "GET_CACHE_STATS" });
+    } catch (_) {}
+  }
+
+  function openOfflineSheet() {
+    if (els.offlineBasemap) {
+      els.offlineBasemap.value = state.settings.basemap || "osm";
+    }
+    if (els.offlinePackName && !els.offlinePackName.value) {
+      const z = map.getZoom();
+      els.offlinePackName.value =
+        "Area z" + Math.round(z) + " · " + new Date().toLocaleDateString("id-ID");
+    }
+    // default zoom around current view
+    const z = Math.round(map.getZoom());
+    if (els.offlineZmin) els.offlineZmin.value = Math.max(10, z - 1);
+    if (els.offlineZmax) els.offlineZmax.value = Math.min(17, z + 2);
+    estimateOfflineTiles();
+    renderOfflinePackList();
+    updateOnlineBadge();
+    requestCacheStats();
+    openSheet("offlineSheet");
+  }
+
+  function renderOfflinePackList() {
+    const box = els.offlinePackList;
+    if (!box) return;
+    updateOfflineMenuLabel();
+    if (!offlinePacks.length) {
+      box.innerHTML =
+        '<div class="empty-state" style="padding:16px 8px">Belum ada paket. Zoom ke area kerja, lalu unduh.</div>';
+      return;
+    }
+    box.innerHTML = offlinePacks
+      .map((p, i) => {
+        return (
+          `<div class="offline-pack-item">` +
+          `<div><h3>${escapeHtml(p.name || "Paket")}</h3>` +
+          `<p>${escapeHtml(p.basemap || "osm")} · z${p.zMin}–${p.zMax} · ${
+            (p.tileCount || 0).toLocaleString("id-ID")
+          } ubin` +
+          (p.created_at
+            ? `<br>${escapeHtml(new Date(p.created_at).toLocaleString("id-ID"))}`
+            : "") +
+          `</p></div>` +
+          `<div style="display:flex;flex-direction:column;gap:6px">` +
+          `<button type="button" data-pack-go="${i}">Lihat</button>` +
+          `<button type="button" class="danger" data-pack-del="${i}">Hapus</button>` +
+          `</div></div>`
+        );
+      })
+      .join("");
+
+    box.querySelectorAll("[data-pack-go]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const i = parseInt(btn.getAttribute("data-pack-go"), 10);
+        const p = offlinePacks[i];
+        if (!p || !p.bbox) return;
+        try {
+          map.fitBounds([
+            [p.bbox[1], p.bbox[0]],
+            [p.bbox[3], p.bbox[2]],
+          ]);
+          if (p.basemap) setBasemap(p.basemap);
+          closeSheet("offlineSheet");
+          toast("Menuju paket: " + (p.name || ""));
+        } catch (_) {}
+      });
+    });
+    box.querySelectorAll("[data-pack-del]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const i = parseInt(btn.getAttribute("data-pack-del"), 10);
+        if (!confirm("Hapus catatan paket ini? (ubin di cache tetap sampai dibersihkan)"))
+          return;
+        offlinePacks.splice(i, 1);
+        saveOfflinePacks();
+        renderOfflinePackList();
+      });
+    });
+  }
+
+  function setOfflineProgress(ok, fail, total) {
+    offlineDownload.ok = ok;
+    offlineDownload.fail = fail;
+    offlineDownload.total = total;
+    const done = ok + fail;
+    const pct = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
+    if (els.offlineProgressWrap) els.offlineProgressWrap.hidden = false;
+    if (els.offlineProgressBar) els.offlineProgressBar.style.width = pct + "%";
+    if (els.offlineProgressText) {
+      els.offlineProgressText.textContent =
+        pct +
+        "% · " +
+        ok +
+        " ok · " +
+        fail +
+        " gagal · " +
+        done +
+        "/" +
+        total;
+    }
+  }
+
+  async function cacheUrlsViaSW(urls) {
+    // Prefer SW message (runs in background); fallback to Cache API from page
+    return new Promise(async (resolve) => {
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+      };
+
+      const onMsg = (event) => {
+        const d = event.data || {};
+        if (d.type === "CACHE_PROGRESS") {
+          setOfflineProgress(d.ok || 0, d.fail || 0, d.total || urls.length);
+        }
+        if (d.type === "CACHE_DONE") {
+          navigator.serviceWorker.removeEventListener("message", onMsg);
+          finish({ ok: d.ok || 0, fail: d.fail || 0 });
+        }
+      };
+
+      if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.addEventListener("message", onMsg);
+        navigator.serviceWorker.controller.postMessage({
+          type: "CACHE_URLS",
+          cache: "geopatok-tiles-v4",
+          urls,
+        });
+        // safety timeout 10 min
+        setTimeout(() => {
+          navigator.serviceWorker.removeEventListener("message", onMsg);
+          finish({
+            ok: offlineDownload.ok,
+            fail: offlineDownload.fail,
+          });
+        }, 600000);
+        return;
+      }
+
+      // Fallback: page-level cache
+      try {
+        const cache = await caches.open("geopatok-tiles-v4");
+        let ok = 0;
+        let fail = 0;
+        const concurrency = 6;
+        let i = 0;
+        async function worker() {
+          while (i < urls.length && !offlineDownload.abort) {
+            const idx = i++;
+            const u = urls[idx];
+            try {
+              const res = await fetch(u, { mode: "cors", credentials: "omit" });
+              if (res && res.ok) {
+                await cache.put(u, res.clone());
+                ok++;
+              } else fail++;
+            } catch (_) {
+              fail++;
+            }
+            setOfflineProgress(ok, fail, urls.length);
+          }
+        }
+        await Promise.all(
+          Array.from({ length: concurrency }, () => worker())
+        );
+        finish({ ok, fail });
+      } catch (e) {
+        finish({ ok: 0, fail: urls.length });
+      }
+    });
+  }
+
+  async function startOfflineDownload() {
+    if (offlineDownload.active) {
+      toast("Unduhan sedang berjalan", true);
+      return;
+    }
+    if (!navigator.onLine) {
+      toast("Butuh internet untuk mengunduh peta", true);
+      return;
+    }
+    const est = estimateOfflineTiles();
+    if (!est || !est.urls.length) {
+      toast("Tidak ada ubin untuk area ini", true);
+      return;
+    }
+    if (est.over) {
+      toast(
+        "Terlalu banyak ubin. Perkecil peta atau turunkan zoom max.",
+        true
+      );
+      return;
+    }
+    const name =
+      (els.offlinePackName && els.offlinePackName.value.trim()) ||
+      "Paket offline";
+    const urls = est.urls.slice(0, OFFLINE_MAX_TILES);
+
+    offlineDownload = {
+      active: true,
+      abort: false,
+      ok: 0,
+      fail: 0,
+      total: urls.length,
+    };
+    if (els.btnStartOfflineDownload) els.btnStartOfflineDownload.disabled = true;
+    if (els.btnCancelOfflineDownload) els.btnCancelOfflineDownload.hidden = false;
+    setOfflineProgress(0, 0, urls.length);
+    setStatus("Mengunduh peta offline…");
+    toast("Mengunduh " + urls.length + " ubin peta…");
+
+    const result = await cacheUrlsViaSW(urls);
+
+    offlineDownload.active = false;
+    if (els.btnStartOfflineDownload) els.btnStartOfflineDownload.disabled = false;
+    if (els.btnCancelOfflineDownload) els.btnCancelOfflineDownload.hidden = true;
+
+    const b = est.bounds;
+    offlinePacks.unshift({
+      id: "pack_" + Date.now().toString(36),
+      name,
+      basemap: est.key,
+      zMin: est.zMin,
+      zMax: est.zMax,
+      tileCount: result.ok,
+      failed: result.fail,
+      bbox: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()],
+      created_at: new Date().toISOString(),
+    });
+    // keep last 20 packs metadata
+    offlinePacks = offlinePacks.slice(0, 20);
+    saveOfflinePacks();
+    renderOfflinePackList();
+    requestCacheStats();
+    updateOnlineBadge();
+
+    toast(
+      "Selesai: " +
+        result.ok +
+        " ubin tersimpan" +
+        (result.fail ? ", " + result.fail + " gagal" : "")
+    );
+    setStatus("Peta offline siap · " + result.ok + " ubin");
+  }
+
+  async function clearAllOfflineTiles() {
+    if (
+      !confirm(
+        "Hapus SEMUA ubin peta offline dari perangkat? Paket area juga akan dikosongkan."
+      )
+    )
+      return;
+    try {
+      await caches.delete("geopatok-tiles-v4");
+      if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({
+          type: "CLEAR_TILE_CACHE",
+        });
+      }
+    } catch (_) {}
+    offlinePacks = [];
+    saveOfflinePacks();
+    renderOfflinePackList();
+    if (els.offlineTileCount) els.offlineTileCount.textContent = "0";
+    toast("Cache peta offline dihapus");
+    updateOnlineBadge();
+  }
+
+  function bindOfflineEvents() {
+    window.addEventListener("online", () => {
+      updateOnlineBadge();
+      toast("Kembali online");
+    });
+    window.addEventListener("offline", () => {
+      updateOnlineBadge();
+      toast("Anda offline — memakai data & peta tersimpan", true);
+    });
+
+    if (els.btnOfflineMaps) {
+      els.btnOfflineMaps.addEventListener("click", () => {
+        closeSheet("moreSheet");
+        openOfflineSheet();
+      });
+    }
+    if (els.btnOfflineMapsFromLayers) {
+      els.btnOfflineMapsFromLayers.addEventListener("click", () => {
+        closeSheet("layersSheet");
+        openOfflineSheet();
+      });
+    }
+    ["offlineZmin", "offlineZmax", "offlineBasemap"].forEach((id) => {
+      const el = $(id);
+      if (el) el.addEventListener("change", estimateOfflineTiles);
+      if (el) el.addEventListener("input", estimateOfflineTiles);
+    });
+    if (els.btnStartOfflineDownload) {
+      els.btnStartOfflineDownload.addEventListener("click", () => {
+        startOfflineDownload();
+      });
+    }
+    if (els.btnCancelOfflineDownload) {
+      els.btnCancelOfflineDownload.addEventListener("click", () => {
+        offlineDownload.abort = true;
+        toast("Membatalkan… (ubin yang sudah masuk tetap tersimpan)");
+      });
+    }
+    if (els.btnClearTileCache) {
+      els.btnClearTileCache.addEventListener("click", () => clearAllOfflineTiles());
+    }
+
+    if (navigator.serviceWorker) {
+      navigator.serviceWorker.addEventListener("message", (event) => {
+        const d = event.data || {};
+        if (d.type === "CACHE_STATS" && d.stats) {
+          const n = d.stats["geopatok-tiles-v4"] || 0;
+          if (els.offlineTileCount) {
+            els.offlineTileCount.textContent = n.toLocaleString("id-ID");
+          }
+        }
+      });
+    }
+
+    // refresh estimate when map moves while sheet open
+    map.on("moveend", () => {
+      if (els.offlineSheet && !els.offlineSheet.hidden) estimateOfflineTiles();
+    });
   }
 
   function getMarkedFeatureEntries() {
@@ -3115,10 +3850,46 @@
 
     $("btnTapMode").addEventListener("click", () => {
       state.tapMode = !state.tapMode;
+      if (state.tapMode && state.coordMode) setCoordMode(false, true);
       updateTapLabel();
       toast(state.tapMode ? "Mode ketuk AKTIF" : "Mode ketuk nonaktif");
-      map.getContainer().style.cursor = state.tapMode ? "crosshair" : "";
+      updateMapCursor();
     });
+
+    if (els.btnCoordMode) {
+      els.btnCoordMode.addEventListener("click", () => {
+        closeSheet("moreSheet");
+        setCoordMode(!state.coordMode);
+      });
+    }
+    if (els.btnCoordCopy) {
+      els.btnCoordCopy.addEventListener("click", () => {
+        if (!lastCoordTap) return toast("Ketuk peta dulu", true);
+        copyText(lastCoordTap.text, "Disalin");
+      });
+    }
+    if (els.btnCoordCopyDMS) {
+      els.btnCoordCopyDMS.addEventListener("click", () => {
+        if (!lastCoordTap) return toast("Ketuk peta dulu", true);
+        copyText(lastCoordTap.textDms, "DMS disalin");
+        if (els.coordBarTextarea) {
+          els.coordBarTextarea.value = lastCoordTap.textDms;
+          els.coordBarTextarea.hidden = false;
+        }
+      });
+    }
+    if (els.btnCoordPaste) {
+      els.btnCoordPaste.addEventListener("click", () => pasteCoordFromClipboard());
+    }
+    if (els.btnCoordClear) {
+      els.btnCoordClear.addEventListener("click", () => {
+        hideCoordBar(true);
+        if (state.coordMode) setCoordMode(false, true);
+        else updateMapCursor();
+        setStatus("Siap memetakan");
+        toast("Koordinat dibersihkan");
+      });
+    }
 
     $("btnWalkMode").addEventListener("click", () => {
       toggleWalkMode();
@@ -3279,7 +4050,7 @@
 
     document.querySelectorAll('input[name="basemap"]').forEach((r) => {
       r.addEventListener("change", () => {
-        if (r.checked) setBasemap(r.value);
+        if (r.checked) setBasemap(r.value, true);
       });
     });
 
@@ -3315,6 +4086,10 @@
     });
 
     map.on("click", (e) => {
+      if (state.coordMode) {
+        onCoordMapClick(e.latlng);
+        return;
+      }
       if (!state.tapMode) return;
       addPointFromTap(e.latlng);
     });
@@ -3357,10 +4132,15 @@
   function init() {
     loadSettings();
     loadMarkedIds();
+    loadOfflinePacks();
     loadParcels();
     bindEvents();
+    bindOfflineEvents();
     updateTapLabel();
+    updateCoordModeLabel();
     updateWalkLabel();
+    updateOfflineMenuLabel();
+    updateOnlineBadge();
     redraw();
     startWatch();
     // try initial center
@@ -3387,6 +4167,12 @@
                 nw.postMessage({ type: "SKIP_WAITING" });
               }
             });
+          });
+          // After SW ready, ask tile stats + ensure BSRE/data can cache
+          navigator.serviceWorker.ready.then(() => {
+            requestCacheStats();
+            // warm-cache BSRE dataset for offline
+            fetch("./data/POLSH_BSRE_1119.geojson").catch(() => {});
           });
         })
         .catch(() => {});
